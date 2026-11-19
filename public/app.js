@@ -443,7 +443,13 @@ document.addEventListener('click', async e => {
     case 'export': exportAll(); break;
     case 'midi': initMidi(); break;
     case 'sign-in':
-      try{ await cloud.signIn(); location.reload(); }catch(e){ console.error(e); toast('Sign-in failed. Try again.'); } break;
+      try{ await cloud.signIn(); location.reload(); }
+      catch(e){
+        console.error(e);
+        if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') break;
+        const el = document.getElementById('signin-err');   // keep the exact reason on screen, not in a 2 s toast
+        if (el) el.textContent = `Sign-in failed: ${e.code || e.message}`;
+      } break;
     case 'sign-out': await cloud.signOut(); location.reload(); break;
   }
 });
@@ -485,7 +491,8 @@ async function migrateLocal(){
 function signInHTML(){
   return `<section class="done"><div class="ico-big" aria-hidden="true">🎹</div><h1>Piano steps</h1>
     <p class="muted">Sign in to keep lessons in sync on every device.</p>
-    <button class="btn primary big" data-act="sign-in">Sign in with Google</button></section>`;
+    <button class="btn primary big" data-act="sign-in">Sign in with Google</button>
+    <p id="signin-err" class="muted" role="alert" style="color:#B83227"></p></section>`;
 }
 
 (async () => {

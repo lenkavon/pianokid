@@ -16,7 +16,7 @@ export async function connectCloud() {
 
   const [
     { initializeApp },
-    { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut },
+    { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signInWithRedirect, signOut },
     { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, setDoc, deleteDoc },
   ] = await Promise.all([
     import(`${B}/firebase-app.js`),
@@ -37,7 +37,16 @@ export async function connectCloud() {
 
   return {
     user,
-    signIn: () => signInWithPopup(auth, new GoogleAuthProvider()),
+    async signIn() {
+      const provider = new GoogleAuthProvider();
+      try {
+        await signInWithPopup(auth, provider);
+      } catch (e) {
+        // popups can be blocked, e.g. when opened from a home-screen shortcut → fall back to a full-page redirect
+        if (['auth/popup-blocked', 'auth/operation-not-supported-in-this-environment'].includes(e.code)) return signInWithRedirect(auth, provider);
+        throw e;
+      }
+    },
     signOut: () => signOut(auth),
     store(uid) {
       const ref = k => doc(db, 'users', uid, 'data', k);
