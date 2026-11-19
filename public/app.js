@@ -1,23 +1,29 @@
 import { connectCloud } from './cloud.js';
+import { parseExercise, notesToText, parsePos } from './notation.js';
 
 // ---------- Notes & colours ----------
 const PC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const BLACK = new Set([1,3,6,8,10]);
 // Boomwhacker-style default; edit in Settings to match the teacher's sheet
 const DEFAULT_COLORS = {C:'#E5333F',D:'#F5911E',E:'#F7CF1E',F:'#3BAA4A',G:'#20AFC4',A:'#7B4FC4',B:'#E2468C'};
-const DEFAULT_FINGER = {1:'#E5333F',2:'#F5911E',3:'#F7CF1E',4:'#3BAA4A',5:'#2F7FD0'};
+// left hand green → yellow, right hand blue → red (thumb first), so a colour also tells the hand
+const DEFAULT_FINGER = {L:{1:'#1B7F3A',2:'#3FA34D',3:'#7DBE3C',4:'#BCCB2A',5:'#F2C200'},
+                        R:{1:'#1F5FD6',2:'#6A4FD3',3:'#A33FB6',4:'#D63A7E',5:'#E5333F'}};
+const fingerDefaults = () => ({L:{...DEFAULT_FINGER.L}, R:{...DEFAULT_FINGER.R}});
 // style 'notes' = colour by note; 'fingers' = sheet is coloured finger numbers → colour by finger, big circle shows the finger
 const DEFAULT_BLACK = {'C#':'#8E1B24','D#':'#A85A0C','F#':'#1F6B2A','G#':'#0D6577','A#':'#4B2A85'};
-let settings = {v:2, naming:'H', style:'fingers', appSound:false, colors:{...DEFAULT_COLORS}, blackColors:{...DEFAULT_BLACK}, fingerColors:{...DEFAULT_FINGER}}; // Czech naming: B natural is called H
+let settings = {v:3, naming:'H', style:'fingers', appSound:false, colors:{...DEFAULT_COLORS}, blackColors:{...DEFAULT_BLACK}, fingerColors:fingerDefaults()}; // Czech naming: B natural is called H
 // black keys: darker shade of the white key below by default; set them to match the stickers / sheet
-// v2: colour by finger is the default; settings saved before v2 are switched over once
-const mergeSettings = s => ({...settings, ...s, ...((s.v || 1) < 2 ? {v:2, style:'fingers'} : {}), colors:{...DEFAULT_COLORS, ...(s.colors||{})}, blackColors:{...DEFAULT_BLACK, ...(s.blackColors||{})}, fingerColors:{...DEFAULT_FINGER, ...(s.fingerColors||{})}});
+// v2: colour by finger is the default; v3: finger colours per hand. Older saved settings are upgraded once
+const mergeSettings = s => ({...settings, ...s, ...((s.v || 1) < 2 ? {style:'fingers'} : {}), v:3, colors:{...DEFAULT_COLORS, ...(s.colors||{})}, blackColors:{...DEFAULT_BLACK, ...(s.blackColors||{})}, fingerColors: (s.v || 1) < 3 || !s.fingerColors?.L ? fingerDefaults() : {L:{...DEFAULT_FINGER.L, ...s.fingerColors.L}, R:{...DEFAULT_FINGER.R, ...s.fingerColors.R}}});
 
 const CZ = {'B':'H','C#':'Cis','D#':'Dis','F#':'Fis','G#':'Gis','A#':'Ais'};   // Czech names
 const name = p => { const n = PC[p%12]; return settings.naming === 'H' ? (CZ[n] || n) : n; };
 const octave = p => Math.floor(p/12) - 1;              // MIDI 60 = C4 (middle C)
 const color = p => (BLACK.has(p%12) ? settings.blackColors : settings.colors)[PC[p%12]];
-const nColor = n => settings.style === 'fingers' ? settings.fingerColors[n.f] : color(n.p);
+const fColor = (h, f) => settings.fingerColors[h === 'L' ? 'L' : 'R'][f];
+const nColor = n => settings.style === 'fingers' ? fColor(n.h, n.f) : color(n.p);
+const keysOf = n => [n, ...(n.with || [])];          // a step can be a chord: n.with = more keys pressed together
 const nLabel = n => settings.style === 'fingers' ? n.f : name(n.p);
 const whiteIndex = p => Math.floor(p/12)*7 + [0,0,1,1,2,3,3,4,4,5,5,6][p%12];
 // white-key index → MIDI pitch, and "n white keys up/down"
@@ -26,6 +32,7 @@ const whiteStep = (p, d) => whiteToPitch(whiteIndex(p) + d);
 // five-finger position: right hand fingers go up from the thumb, left hand fingers go down from the thumb
 const fingerPitch = (h, f, thumb) => whiteStep(thumb, h === 'R' ? f-1 : -(f-1));
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const pick = (o, ks) => Object.fromEntries(ks.filter(k => o[k] != null).map(k => [k, o[k]]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function ink(hex){ const n=parseInt(hex.slice(1),16); const r=n>>16&255,g=n>>8&255,b=n&255;
@@ -63,6 +70,7 @@ async function saveList(){
 
 // ---------- MIDI ----------
 let midiState = 'idle', midiName = '', midiAccess = null;
+const held = new Set();            // keys currently held down on the Casio
 async function initMidi(){
   if (!navigator.requestMIDIAccess){ midiState = 'unsupported'; renderBar(); return; }
   try{
@@ -82,7 +90,9 @@ function bindInputs(){
 }
 function onMidi(e){
   const [st, note, vel] = e.data;
-  if ((st & 0xF0) === 0x90 && vel > 0) handleNote(note, 'midi'); // note-on; vel 0 = note-off, ignored
+  const cmd = st & 0xF0;
+  if (cmd === 0x90 && vel > 0){ held.add(note); handleNote(note, 'midi'); }          // note-on
+  else if (cmd === 0x80 || cmd === 0x90) held.delete(note);                          // note-off (or note-on with velocity 0)
 }
 
 // Sound from the phone. appSound = Casio volume at 0 and only correct notes are heard ("silent mistakes")
@@ -101,7 +111,7 @@ function blip(p){ try{
 
 function handleNote(p, src){
   stopPlayback();
-  if (view === 'edit'){ if (src === 'screen' || settings.appSound) blip(p); addNote(p); }
+  if (view === 'edit'){ if (src === 'screen' || settings.appSound) blip(p); if (edit.mode === 'text') typeNote(p); else addNote(p); }
   else if (view === 'play') playNote(p, src);
   else if (src === 'screen') blip(p);
   const k = document.querySelector(`.key[data-p="${p}"]`);
@@ -109,12 +119,19 @@ function handleNote(p, src){
 }
 
 // ---------- Editor ----------
-function newExercise(){ edit = {id:uid(), name:'', notes:[], icon:'🎵', sel:-1, oct:4, isNew:true, thumbR:60, thumbL:55, bpm:80}; view = 'edit'; render(); } // default C position: RH thumb C4, LH thumb G3
+const TEXT_DEFAULTS = {posR:'C D E F G', octR:4, posL:'C D E F G', octL:3, lineBlocks:false};   // C position: RH thumb C4, LH thumb G3
+function newExercise(){
+  edit = {id:uid(), name:'', notes:[], icon:'🎵', sel:-1, oct:4, isNew:true, thumbR:60, thumbL:55, bpm:80,
+          mode:'text', text:'', warnings:[], ...TEXT_DEFAULTS};
+  view = 'edit'; render();
+}
 async function openEdit(id){
   const ex = exercises.find(x => x.id === id);
   const lowest = Math.min(...ex.notes.map(n => n.p));
   edit = {id, name:ex.name, notes:ex.notes.map(n => ({...n})), icon: ex.icon || '🎵',
-          sel: ex.notes.length-1, oct: clamp(octave(lowest),1,6), isNew:false, thumbR: ex.thumbR || 60, thumbL: ex.thumbL || 55, bpm: ex.bpm || 80};
+          sel: ex.notes.length-1, oct: clamp(octave(lowest),1,6), isNew:false, thumbR: ex.thumbR || 60, thumbL: ex.thumbL || 55, bpm: ex.bpm || 80,
+          ...TEXT_DEFAULTS, ...pick(ex, ['posR','octR','posL','octL','lineBlocks']), mode: ex.text != null ? 'text' : 'keys', text: ex.text || '', warnings:[]};
+  if (edit.mode === 'text') reparse();
   view = 'edit'; render();
 }
 function addNote(p){
@@ -127,13 +144,26 @@ function addNote(p){
   }
   insertNote(p, f, h);
 }
+function typeNote(p){                       // Casio key in typing mode → note name at the cursor
+  const ta = document.getElementById('extext'), word = name(p);
+  if (ta && document.activeElement === ta){
+    const a = ta.selectionStart, pre = ta.value.slice(0, a), post = ta.value.slice(ta.selectionEnd);
+    const ins = (pre && !/\s$/.test(pre) ? ' ' : '') + word + ' ';
+    ta.value = pre + ins + post; ta.selectionStart = ta.selectionEnd = a + ins.length;
+  } else if (ta) ta.value += (ta.value && !/\s$/.test(ta.value) ? ' ' : '') + word + ' ';
+  else return;
+  edit.text = ta.value; reparse(); refreshDerived();
+}
 function insertNote(p, f, h){ edit.notes.splice(edit.sel+1, 0, {p, f, h}); edit.sel++; render(); }
 async function saveEdit(){
   if (!edit.notes.length){ toast('Add at least one note'); return; }
   let ex = exercises.find(x => x.id === edit.id);
   if (!ex){ ex = {id:edit.id, best:0}; exercises.unshift(ex); }
   ex.name = edit.name.trim() || ('Exercise ' + exercises.length);
-  ex.notes = edit.notes; ex.thumbR = edit.thumbR; ex.thumbL = edit.thumbL; ex.bpm = edit.bpm;
+  ex.notes = edit.notes.map(n => { const {g, ...k} = n; if (k.with) k.with = k.with.map(({g, ...w}) => w); return k; });   // drop "guessed" flags
+  ex.thumbR = edit.thumbR; ex.thumbL = edit.thumbL; ex.bpm = edit.bpm;
+  Object.assign(ex, pick(edit, ['posR','octR','posL','octL','lineBlocks']));
+  if (edit.mode === 'text') ex.text = edit.text; else delete ex.text;     // tapped edits: the text would be stale
   ex.icon = edit.icon;
   if (ex.hasPhoto){ delete ex.hasPhoto; await store.del('photo:'+ex.id); }   // drop photos from older versions
   await saveList(); edit = null; view = 'home'; render();
@@ -150,17 +180,17 @@ function sound(p){
   else blip(p);
 }
 function flash(p){ const k = document.querySelector(`.key[data-p="${p}"]`); if (k){ k.classList.add('down'); setTimeout(() => k.classList.remove('down'), 250); } }
-function runSeq(seq, onStep){            // seq: [{p, wait}], wait = ms after the previous note
+function runSeq(seq, onStep){            // seq: [{ps, wait}], ps = keys sounded together, wait = ms after the previous step
   stopPlayback(); let i = 0;
   const tick = () => {
     if (!playback) return;
     if (i >= seq.length){ stopPlayback(); return; }
-    sound(seq[i].p); flash(seq[i].p); onStep && onStep(i); i++;
+    for (const p of seq[i].ps){ sound(p); flash(p); } onStep && onStep(i); i++;
     if (i < seq.length) playback.timer = setTimeout(tick, seq[i].wait); else playback.timer = setTimeout(tick, 400);
   };
   playback = {timer: setTimeout(tick, 150)};
 }
-const listen = (notes, bpm, onStep) => runSeq(notes.map(n => ({p:n.p, wait:60000/bpm})), onStep);  // one note per beat
+const listen = (notes, bpm, onStep) => runSeq(notes.map(n => ({ps:keysOf(n).map(k => k.p), wait:60000/bpm})), onStep);  // one step per beat
 const hearChip = i => document.querySelectorAll('.chip').forEach((c, j) => c.classList.toggle('hear', j === i));
 
 // ---------- Blocks ----------
@@ -186,15 +216,20 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 async function startPlay(id){
   const ex = exercises.find(x => x.id === id);
-  play = {ex, i:0, first:true, clean:0, misses:0, log:[]};
+  play = {ex, i:0, first:true, clean:0, misses:0, log:[], got:{}};
   view = 'play'; keepAwake(); render();
 }
 function playNote(p, src){
   if (play.stepDone){ play.stepDone = false; render(); return; }   // any key = open the next step
   const t = play.ex.notes[play.i]; if (!t) return;
-  play.log.push({p, t: performance.now(), ok: p === t.p});
-  if (p === t.p){
+  const req = keysOf(t).map(k => k.p), now = performance.now(), ok = req.includes(p);
+  play.log.push({p, t: now, ok});
+  if (ok){
     if (settings.appSound || src === 'screen') blip(p);
+    // chord: every key held down, or pressed within the last 1.5 s (on-screen taps can't be held)
+    play.got[p] = now;
+    if (!req.every(q => held.has(q) || now - (play.got[q] ?? -1e9) <= 1500)){ render(); return; }
+    play.got = {};
     if (play.first) play.clean++;          // score = notes right on the first try
     play.i++; play.first = true;
     if (play.i >= play.ex.notes.length){ finish(); return; }
@@ -244,27 +279,27 @@ async function importAll(file){
 }
 
 // ---------- Rendering ----------
-function keyAttrs(p, target, extra='', tc){
-  const t = p === target, c = tc || color(p);
+function keyAttrs(p, targets, extra=''){
+  const t = targets.has(p), c = targets.get(p);
   return `class="key ${BLACK.has(p%12) ? 'black' : 'white'}${t ? ' target' : ''}" data-p="${p}" `
        + `style="--kc:${settings.style === 'notes' ? color(p) : 'transparent'};${t ? `--c:${c};--ci:${ink(c)};` : ''}${extra}" aria-label="${name(p)}${octave(p)}"`;
 }
-function keyboardHTML(lo, hi, target, labels, tc){
+function keyboardHTML(lo, hi, targets = new Map(), labels){
   const whites = []; for (let p = lo; p <= hi; p++) if (!BLACK.has(p%12)) whites.push(p);
   const W = 100/whites.length, w0 = whiteIndex(lo);
   let h = `<div class="kbd" style="min-width:${whites.length*32}px"><div class="whites">`;
   for (const p of whites)
-    h += `<button ${keyAttrs(p,target,'',tc)}>${p === 60 ? '<i class="mc"></i>' : ''}<span>${labels || p === target ? name(p) : ''}</span></button>`;
+    h += `<button ${keyAttrs(p,targets)}>${p === 60 ? '<i class="mc"></i>' : ''}<span>${labels || targets.has(p) ? name(p) : ''}</span></button>`;
   h += '</div>';
   for (let p = lo; p <= hi; p++) if (BLACK.has(p%12)){
     const left = (whiteIndex(p) - w0 + 1)*W - W*0.3;   // centred on the line between two white keys
-    h += `<button ${keyAttrs(p, target, `left:${left}%;width:${W*0.6}%;`, tc)}>${labels || p === target ? name(p) : ''}</button>`;
+    h += `<button ${keyAttrs(p, targets, `left:${left}%;width:${W*0.6}%;`)}>${labels || targets.has(p) ? name(p) : ''}</button>`;
   }
   return h + '</div>';
 }
-function handSVG(h, f, c){
+function handSVG(h, fmap){
   // Back of the hand, fingers up. Right hand: thumb on the left. Left hand = mirror.
-  const fill = i => i === f ? c : '#FFFFFF', sw = i => i === f ? 5 : 3;
+  const fill = i => fmap[i] || '#FFFFFF', sw = i => fmap[i] ? 5 : 3;
   const fing = (i, x, y, w, ht, tr='') => `<rect x="${x}" y="${y}" width="${w}" height="${ht}" rx="${w/2}" ${tr} fill="${fill(i)}" stroke="#1F2B33" stroke-width="${sw(i)}"/>`;
   const g = fing(2,38,28,16,58) + fing(3,56,14,16,72) + fing(4,74,22,16,64) + fing(5,92,42,14,46)
           + fing(1,22,66,16,50,'transform="rotate(-35 30 114)"')
@@ -283,17 +318,53 @@ function homeHTML(){
       <button class="btn primary big" data-act="play" data-id="${ex.id}">Play</button></div>`;
   return h + `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, colors, backup</button></div>`;
 }
-function editHTML(){
+function chipHTML(n, i){
+  const cs = keysOf(n).map(k => `<span class="c" style="background:${nColor(k)};color:${ink(nColor(k))}">${settings.style === 'fingers' ? k.f : name(k.p)}</span>`).join('');
+  const sub = keysOf(n).map(k => `${settings.style === 'fingers' ? name(k.p) : k.h + k.f}${k.g ? '?' : ''}`).join('+');
+  const guess = keysOf(n).some(k => k.g);
+  return `<button class="chip${i === edit.sel && edit.mode === 'keys' ? ' sel' : ''}${n.br && i < edit.notes.length-1 ? ' br' : ''}${guess ? ' guess' : ''}${n.with ? ' chord' : ''}" data-act="sel" data-i="${i}"><span class="cs">${cs}</span><small>${sub}</small></button>`;
+}
+function stripHTML(){
+  return `<div class="strip">${edit.notes.map(chipHTML).join('') || '<span class="muted" style="align-self:center">No notes yet</span>'}</div>`;
+}
+// parts of the text editor that change while typing (re-rendered without touching the textarea)
+function derivedHTML(){
+  const w = edit.warnings || [];
+  return stripHTML() + (w.length ? `<ul class="warn">${w.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
+    + `<p class="muted">${edit.notes.length} steps${blocksOf(edit).length > 1 ? `, blocks ${blocksOf(edit).map(([a,b]) => b-a).join(' + ')}` : ''}</p>`;
+}
+function posRange(h){
+  const keys = parsePos(edit['pos'+h], edit['oct'+h], settings.naming).keys.filter(p => p != null);
+  return keys.length ? `${name(keys[0])}${octave(keys[0])}–${name(keys[keys.length-1])}${octave(keys[keys.length-1])}` : '—';
+}
+const textOpts = () => ({posR:edit.posR, octR:edit.octR, posL:edit.posL, octL:edit.octL, lineBlocks:edit.lineBlocks, naming:settings.naming});
+function reparse(){
+  const r = parseExercise({...textOpts(), text:edit.text});
+  edit.notes = r.notes; edit.warnings = r.warnings; edit.sel = edit.notes.length-1;
+}
+function refreshDerived(){ const d = document.getElementById('derived'); if (d) d.innerHTML = derivedHTML(); }
+
+function textEditorHTML(){
+  const pos = h => `<div class="posrow"><b>${h === 'R' ? 'Right' : 'Left'}</b>
+      <input id="pos${h}" type="text" value="${esc(edit['pos'+h])}" autocomplete="off" spellcheck="false" aria-label="${h === 'R' ? 'Right' : 'Left'} hand position">
+      <div class="seg"><button data-act="posoct" data-h="${h}" data-v="-1" aria-label="Octave down">◀</button><b class="range">${posRange(h)}</b><button data-act="posoct" data-h="${h}" data-v="1" aria-label="Octave up">▶</button></div></div>`;
+  return `<span class="field">Hand positions: the 5 keys under the fingers, low to high, "-" for a finger with no key</span>
+    ${pos('L')}${pos('R')}
+    <p class="hint">Right hand fingers 1→5 go up, left hand fingers 5→1 go up. Example on black keys: <code>- Fis Gis Ais -</code></p>
+    <label class="field" for="extext">Notes, one line per row of the sheet</label>
+    <textarea id="extext" rows="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="R: C D E F G&#10;L: G F E D C">${esc(edit.text)}</textarea>
+    <p class="hint"><code>R:</code> or <code>P:</code> right hand, <code>L:</code> left hand (a line without it keeps the hand).
+      Spaces optional: <code>CDEFG</code>. Finger comes from the hand position; a digit sets it: <code>E3</code>.
+      <code>C'</code> / <code>C,</code> octave up / down. <code>C+E</code> pressed together, also across hands: <code>E+L:C</code>.
+      Playing the Casio adds notes here too.</p>
+    <label class="check"><input type="checkbox" id="lineblocks"${edit.lineBlocks ? ' checked' : ''}> Pause after each line</label>
+    <div id="derived">${derivedHTML()}</div>`;
+}
+
+function keysEditorHTML(){
   const lo = (edit.oct+1)*12, hi = lo+23, sel = edit.notes[edit.sel];
-  let h = `<div class="row spread"><button class="btn quiet" data-act="home">Cancel</button><b>${edit.isNew ? 'New exercise' : 'Edit exercise'}</b><button class="btn primary" data-act="save">Save</button></div>
-    <label class="field" for="exname">Name</label>
-    <input id="exname" type="text" value="${esc(edit.name)}" placeholder="Lesson 3, Little bee" autocomplete="off">
-    <span class="field">Icon</span>
-    <div class="icons">${(ICONS.includes(edit.icon) ? ICONS : [edit.icon, ...ICONS]).map(e => `<button class="${e === edit.icon ? 'on' : ''}" data-act="icon" data-v="${e}" aria-label="${e}">${e}</button>`).join('')}
-      <button class="more" data-act="emoji-picker">All emoji…</button></div>
-    <span class="field">Notes: play them on the keyboard in order, or tap the keys below. New notes go after the selected one.</span>
-    <div class="strip">${edit.notes.map((n,i) => `<button class="chip${i === edit.sel ? ' sel' : ''}${n.br && i < edit.notes.length-1 ? ' br' : ''}" data-act="sel" data-i="${i}"><span class="c" style="background:${nColor(n)};color:${ink(nColor(n))}">${name(n.p)}</span><small>${n.h}${n.f}</small></button>`).join('')
-      || '<span class="muted" style="align-self:center">No notes yet</span>'}</div>`;
+  let h = `<span class="field">Play the notes on the keyboard in order, or tap the keys below. New notes go after the selected one.</span>
+    ${stripHTML()}`;
   if (sel) h += `<div class="row controls"><b>${name(sel.p)}${octave(sel.p)}</b>
       <div class="seg">${['L','R'].map(v => `<button class="${sel.h === v ? 'on' : ''}" data-act="hand" data-v="${v}">${v === 'L' ? 'Left' : 'Right'}</button>`).join('')}</div>
       <div class="seg" aria-label="Finger">${[1,2,3,4,5].map(v => `<button class="${sel.f === v ? 'on' : ''}" data-act="finger" data-v="${v}">${v}</button>`).join('')}</div>
@@ -301,21 +372,34 @@ function editHTML(){
       <button class="btn danger" data-act="del-note">Delete note</button></div>`;
   if (edit.notes.length) h += `<div class="row" style="margin-top:8px"><span class="muted">${blocksOf(edit).length > 1 ? `Blocks: ${blocksOf(edit).map(([a,b]) => b-a).join(' + ')} notes` : 'No blocks: whole piece in one go'}</span>
       <button class="btn quiet" data-act="split-hand">Split by hand</button><button class="btn quiet" data-act="clear-br">No blocks</button></div>`;
-  const fb = (h, f) => `<button data-act="addf" data-h="${h}" data-v="${f}" style="box-shadow:inset 0 -6px 0 ${settings.fingerColors[f]}">${f}</button>`;
-  const thumb = h => `<div class="row"><span class="muted">${h === 'L' ? 'Left' : 'Right'} thumb on</span><div class="seg">
-      <button data-act="thumb" data-h="${h}" data-v="-1" aria-label="Move down">◀</button><b>${name(edit['thumb'+h])}${octave(edit['thumb'+h])}</b>
-      <button data-act="thumb" data-h="${h}" data-v="1" aria-label="Move up">▶</button></div></div>`;
-  h += `<span class="field">Tempo</span>
-    <div class="row"><div class="seg"><button data-act="bpm" data-v="-10" aria-label="Slower">−</button><b>${edit.bpm} bpm</b><button data-act="bpm" data-v="10" aria-label="Faster">+</button></div>
-      <button class="btn" data-act="listen-edit"${edit.notes.length ? '' : ' disabled'}>▶ Listen</button></div>`;
-  h += `<span class="field">Add by finger number, as on the sheet</span>
+  const fb = (hd, f) => `<button data-act="addf" data-h="${hd}" data-v="${f}" style="box-shadow:inset 0 -6px 0 ${fColor(hd, f)}">${f}</button>`;
+  const thumb = hd => `<div class="row"><span class="muted">${hd === 'L' ? 'Left' : 'Right'} thumb on</span><div class="seg">
+      <button data-act="thumb" data-h="${hd}" data-v="-1" aria-label="Move down">◀</button><b>${name(edit['thumb'+hd])}${octave(edit['thumb'+hd])}</b>
+      <button data-act="thumb" data-h="${hd}" data-v="1" aria-label="Move up">▶</button></div></div>`;
+  h += `<span class="field">Add by finger number</span>
     <div class="row"><div class="seg"><b>Left</b>${[5,4,3,2,1].map(f => fb('L',f)).join('')}</div>
       <div class="seg"><b>Right</b>${[1,2,3,4,5].map(f => fb('R',f)).join('')}</div></div>
-    <div class="row" style="margin-top:8px">${thumb('L')}${thumb('R')}</div>`;
-  h += `<div class="row spread oct"><button class="btn quiet" data-act="oct" data-v="-1" aria-label="Lower octave">◀</button>
+    <div class="row" style="margin-top:8px">${thumb('L')}${thumb('R')}</div>
+    <div class="row spread oct"><button class="btn quiet" data-act="oct" data-v="-1" aria-label="Lower octave">◀</button>
       <span class="muted">${name(lo)}${octave(lo)} to ${name(hi)}${octave(hi)}</span>
       <button class="btn quiet" data-act="oct" data-v="1" aria-label="Higher octave">▶</button></div>
-    <div class="kwrap">${keyboardHTML(lo, hi, -1, true)}</div>`;
+    <div class="kwrap">${keyboardHTML(lo, hi, new Map(), true)}</div>`;
+  return h;
+}
+
+function editHTML(){
+  let h = `<div class="row spread"><button class="btn quiet" data-act="home">Cancel</button><b>${edit.isNew ? 'New exercise' : 'Edit exercise'}</b><button class="btn primary" data-act="save">Save</button></div>
+    <label class="field" for="exname">Name</label>
+    <input id="exname" type="text" value="${esc(edit.name)}" placeholder="Lesson 3, Little bee" autocomplete="off">
+    <span class="field">Icon</span>
+    <div class="icons">${(ICONS.includes(edit.icon) ? ICONS : [edit.icon, ...ICONS]).map(e => `<button class="${e === edit.icon ? 'on' : ''}" data-act="icon" data-v="${e}" aria-label="${e}">${e}</button>`).join('')}
+      <button class="more" data-act="emoji-picker">All emoji…</button></div>
+    <span class="field">Tempo</span>
+    <div class="row"><div class="seg"><button data-act="bpm" data-v="-10" aria-label="Slower">−</button><b>${edit.bpm} bpm</b><button data-act="bpm" data-v="10" aria-label="Faster">+</button></div>
+      <button class="btn" data-act="listen-edit">▶ Listen</button></div>
+    <span class="field">Enter notes by</span>
+    <div class="seg">${[['text','Typing'],['keys','Tapping keys']].map(([k,l]) => `<button class="${edit.mode === k ? 'on' : ''}" data-act="mode" data-v="${k}">${l}</button>`).join('')}</div>
+    ${edit.mode === 'text' ? textEditorHTML() : keysEditorHTML()}`;
   if (!edit.isNew) h += `<div class="row" style="margin-top:20px"><button class="btn danger" data-act="del-ex">Delete exercise</button></div>`;
   return h;
 }
@@ -335,19 +419,25 @@ function playHTML(){
       <div class="stepdone">${wallHTML(ex, play.i, true)}<h1>Step ${s} done!</h1>
         <button class="btn primary big" data-act="next-step">Next step</button><p class="muted">or press any key</p></div></section>`;
   }
-  const n = ex.notes[play.i], next = ex.notes[play.i+1], c = nColor(n);
+  const n = ex.notes[play.i], next = ex.notes[play.i+1], keys = keysOf(n);
   const k = blockIndex(blocks, play.i), stepNo = k + 1, stepEnd = blocks[k][1];
-  const ps = ex.notes.map(x => x.p), lo = Math.floor(Math.min(...ps)/12)*12, hi = Math.floor(Math.max(...ps)/12)*12 + 11;
-  const then = play.i+1 === N ? 'last one!' : play.i+1 === stepEnd ? 'last in this step'
-    : `then <span class="mini" style="background:${nColor(next)};color:${ink(nColor(next))}">${nLabel(next)}</span>`;
+  const ps = ex.notes.flatMap(x => keysOf(x).map(y => y.p)), lo = Math.floor(Math.min(...ps)/12)*12, hi = Math.floor(Math.max(...ps)/12)*12 + 11;
+  const mini = x => keysOf(x).map(y => `<span class="mini" style="background:${nColor(y)};color:${ink(nColor(y))}">${nLabel(y)}</span>`).join('');
+  const then = play.i+1 === N ? 'last one!' : play.i+1 === stepEnd ? 'last in this step' : `then ${mini(next)}`;
+  const bubble = y => `<div class="bubble${keys.length > 1 ? ' small' : ''}${String(nLabel(y)).length > 2 ? ' long' : ''}${play.got[y.p] ? ' got' : ''}" style="background:${nColor(y)};color:${ink(nColor(y))}">${nLabel(y)}</div>`;
+  const hands = ['L','R'].filter(h => keys.some(y => y.h === h)).map(h => {
+    const ks = keys.filter(y => y.h === h), fmap = Object.fromEntries(ks.map(y => [y.f, nColor(y)]));
+    return `<div class="hand">${handSVG(h, fmap)}<div class="finger">${ks.map(y => y.f).join(' ')}</div><div class="muted">${h === 'L' ? 'Left hand' : 'Right hand'}</div></div>`;
+  }).join('');
+  const targets = new Map(keys.map(y => [y.p, nColor(y)]));
   return `<section class="play">${head(steps > 1 ? `Step ${stepNo} of ${steps}` : `${play.i+1}/${N}`)}
     <div class="stage">
       <div class="ico-big" aria-hidden="true">${ex.icon || '🎵'}</div>
-      <div class="bubble-wrap"><div class="bubble${String(nLabel(n)).length > 2 ? ' long' : ''}" style="background:${c};color:${ink(c)}">${nLabel(n)}</div><div class="then">${then}</div></div>
-      <div class="hand">${handSVG(n.h, n.f, c)}<div class="finger">${n.f}</div><div class="muted">${n.h === 'L' ? 'Left hand' : 'Right hand'}</div></div>
+      <div class="bubble-wrap"><div class="bubbles">${keys.map(bubble).join('')}</div>${keys.length > 1 ? '<div class="muted">together</div>' : ''}<div class="then">${then}</div></div>
+      ${hands}
       ${wallHTML(ex, play.i, play.i > 0)}
     </div>
-    <div class="kwrap">${keyboardHTML(lo, hi, n.p, false, c)}</div></section>`;
+    <div class="kwrap">${keyboardHTML(lo, hi, targets, false)}</div></section>`;
 }
 function doneHTML(){
   return `<section class="done"><div class="ico-big" aria-hidden="true">${play.ex.icon || '🎵'}</div>${wallHTML(play.ex, play.ex.notes.length, false)}<div class="bigstars">${[1,2,3].map(k => `<span class="${k <= play.stars ? '' : 'off'}">★</span>`).join('')}</div>
@@ -364,7 +454,7 @@ function settingsHTML(){
     <span class="field">The teacher's sheet shows</span>
     <div class="seg">${[['notes','Colored notes'],['fingers','Colored finger numbers']].map(([k,l]) => `<button class="${settings.style === k ? 'on' : ''}" data-act="style" data-v="${k}">${l}</button>`).join('')}</div>
     <span class="field">Finger colors</span>
-    <div class="row">${[1,2,3,4,5].map(f => `<label class="swatch"><input type="color" data-fcolor="${f}" value="${settings.fingerColors[f]}"><span>${f}</span></label>`).join('')}</div>
+    ${['L','R'].map(h => `<div class="row"><b style="width:52px">${h === 'L' ? 'Left' : 'Right'}</b>${[1,2,3,4,5].map(f => `<label class="swatch"><input type="color" data-fcolor="${h}${f}" value="${fColor(h, f)}"><span>${f}</span></label>`).join('')}</div>`).join('')}
     <span class="field">Note colors</span>
     <div class="row">${['C','D','E','F','G','A','B'].map(L => `<label class="swatch"><input type="color" data-color="${L}" value="${settings.colors[L]}"><span>${L === 'B' && settings.naming === 'H' ? 'H' : L}</span></label>`).join('')}</div>
     <span class="field">Black key colors</span>
@@ -406,8 +496,17 @@ document.addEventListener('click', async e => {
     case 'br': edit.notes[edit.sel].br = !edit.notes[edit.sel].br; render(); break;
     case 'split-hand': splitByHand(edit.notes); render(); break;
     case 'clear-br': edit.notes.forEach(n => delete n.br); render(); break;
+    case 'mode':
+      if (v === 'text'){
+        const same = JSON.stringify(parseExercise({...textOpts(), text:edit.text}).notes.map(n => keysOf(n).map(k => [k.p,k.f,k.h])))
+                  === JSON.stringify(edit.notes.map(n => keysOf(n).map(k => [k.p,k.f,k.h])));
+        if (!same && edit.notes.length){ edit.lineBlocks = edit.notes.some(n => n.br); edit.text = notesToText(edit.notes, textOpts()); }
+        reparse();
+      }
+      edit.mode = v; render(); break;
+    case 'posoct': { const k = 'oct'+b.dataset.h; edit[k] = clamp(edit[k] + (+v), 1, 6); reparse(); render(); } break;
     case 'bpm': edit.bpm = clamp(edit.bpm + (+v), 30, 200); render(); break;
-    case 'listen-edit': listen(edit.notes, edit.bpm, hearChip); break;
+    case 'listen-edit': if (edit.notes.length) listen(edit.notes, edit.bpm, hearChip); break;
     case 'listen-play': {
       const [a, b] = blocksOf(play.ex)[blockIndex(blocksOf(play.ex), Math.min(play.i, play.ex.notes.length-1))];
       listen(play.ex.notes.slice(a, b), play.ex.bpm || 80);   // just the current step
@@ -415,7 +514,7 @@ document.addEventListener('click', async e => {
     case 'replay': {
       // her real timing; in phone-sound mode only the notes she actually heard (correct ones)
       const L = play.log.filter(x => x.ok || !settings.appSound);
-      runSeq(L.map((x, i) => ({p:x.p, wait: i ? clamp(x.t - L[i-1].t, 80, 1500) : 0})));
+      runSeq(L.map((x, i) => ({ps:[x.p], wait: i ? clamp(x.t - L[i-1].t, 0, 1500) : 0})));
     } break;
     case 'home': stopPlayback(); releaseWake(); view = 'home'; edit = null; play = null; render(); break;
     case 'save': saveEdit(); break;
@@ -424,7 +523,7 @@ document.addEventListener('click', async e => {
         exercises = exercises.filter(x => x.id !== edit.id); await store.del('photo:'+edit.id);
         await saveList(); edit = null; view = 'home'; render();
       } break;
-    case 'sel': edit.sel = +b.dataset.i; render(); break;
+    case 'sel': if (edit.mode === 'keys'){ edit.sel = +b.dataset.i; render(); } break;
     case 'hand': edit.notes[edit.sel].h = v; render(); break;
     case 'finger': edit.notes[edit.sel].f = +v; render(); break;
     case 'del-note': edit.notes.splice(edit.sel, 1); edit.sel = Math.min(edit.sel, edit.notes.length-1); render(); break;
@@ -439,7 +538,7 @@ document.addEventListener('click', async e => {
     case 'again': startPlay(play.ex.id); break;
     case 'settings': view = 'settings'; render(); break;
     case 'naming': settings.naming = v; await store.set('settings', settings); render(); break;
-    case 'reset-colors': settings.colors = {...DEFAULT_COLORS}; settings.blackColors = {...DEFAULT_BLACK}; settings.fingerColors = {...DEFAULT_FINGER}; await store.set('settings', settings); render(); break;
+    case 'reset-colors': settings.colors = {...DEFAULT_COLORS}; settings.blackColors = {...DEFAULT_BLACK}; settings.fingerColors = fingerDefaults(); await store.set('settings', settings); render(); break;
     case 'export': exportAll(); break;
     case 'midi': initMidi(); break;
     case 'sign-in':
@@ -466,13 +565,22 @@ async function openEmojiPicker(){
   });
   o.hidden = false;
 }
-document.addEventListener('input', e => { if (e.target.id === 'exname') edit.name = e.target.value; });
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (t.id === 'exname') edit.name = t.value;
+  else if (t.id === 'extext'){ edit.text = t.value; reparse(); refreshDerived(); }
+  else if (t.id === 'posR' || t.id === 'posL'){
+    edit[t.id] = t.value; reparse(); refreshDerived();
+    t.closest('.posrow').querySelector('.range').textContent = posRange(t.id.slice(3));
+  }
+  else if (t.id === 'lineblocks'){ edit.lineBlocks = t.checked; reparse(); refreshDerived(); }
+});
 document.addEventListener('change', async e => {
   const t = e.target;
   if (t.id === 'import-in' && t.files[0]) importAll(t.files[0]);
   else if (t.dataset.color){ settings.colors[t.dataset.color] = t.value; await store.set('settings', settings); }
   else if (t.dataset.bcolor){ settings.blackColors[t.dataset.bcolor] = t.value; await store.set('settings', settings); render(); }
-  else if (t.dataset.fcolor){ settings.fingerColors[t.dataset.fcolor] = t.value; await store.set('settings', settings); }
+  else if (t.dataset.fcolor){ const [h, f] = t.dataset.fcolor; settings.fingerColors[h][f] = t.value; await store.set('settings', settings); }
 });
 
 // ---------- Start ----------

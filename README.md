@@ -44,6 +44,25 @@ It creates the service-account secret in the repo and writes the workflows
 (deploy on push to `main`, preview channel on pull requests).
 It deploys hosting only; after changing `firestore.rules`, run `firebase deploy --only firestore:rules`.
 
+## Entering notes
+
+Typing mode (default). Set where each hand rests (5 keys, low to high, `-` for a finger with no key),
+then type one line per row of the sheet; fingers follow from the hand position.
+
+```
+Left:  C D E F G        Right: C D E F G       (black keys: - Fis Gis Ais -)
+
+R: C D E F G            right hand (P: works too)
+L: G F E D C            left hand; no prefix keeps the previous hand
+CDEFG                   spaces optional
+E3                      digit = explicit finger
+C'  C,                  octave up / down from the hand position
+C+E   E+L:C             pressed together (chord), also across hands
+```
+
+Notes outside the hand position get the nearest finger and are marked `?`.
+"Pause after each line" turns lines into blocks. Parser: `public/notation.js`.
+
 ## Data and access
 
 Lessons and settings are shared by the family: `spaces/family/data/exercises` and `.../settings`,

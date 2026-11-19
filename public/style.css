@@ -104,3 +104,22 @@ emoji-picker{width:min(100%,420px);height:min(80dvh,480px);--emoji-size:1.8rem}
 #overlay img{max-width:100%;max-height:100%;border-radius:10px}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 18px;border-radius:12px;z-index:20}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* typing editor */
+textarea{width:100%;font:inherit;font-size:1.2rem;line-height:1.5;padding:12px;border:2px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);resize:vertical;letter-spacing:.04em}
+.posrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0}
+.posrow > b{width:44px}
+.posrow input{flex:1;min-width:150px;font:inherit;font-size:1.1rem;padding:10px;border:2px solid var(--line);border-radius:12px;background:var(--panel)}
+.posrow .range{min-width:96px}
+.hint{color:var(--muted);font-size:.85rem;line-height:1.5;margin:6px 0}
+.hint code,.posrow code{background:var(--panel);border-radius:6px;padding:1px 5px;font-weight:800;color:var(--ink)}
+.check{display:flex;align-items:center;gap:8px;margin:10px 0;font-weight:800}
+.check input{width:22px;height:22px}
+.warn{margin:6px 0;padding:8px 12px 8px 28px;background:#FFF4E5;border-radius:12px;color:#8A4B00;font-size:.9rem}
+/* chips: chords and guessed fingers */
+.chip .cs{display:flex;flex-direction:column;gap:2px}
+.chip.guess small{color:#B83227;font-weight:900}
+/* practice: chords */
+.bubbles{display:flex;gap:12px;align-items:center}
+.bubble.small{width:min(26vw,130px);font-size:min(13vw,64px)}
+.bubble.small.long{font-size:min(9vw,44px)}
+.bubble.got{outline:6px solid var(--gold);outline-offset:4px}
