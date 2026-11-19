@@ -1,12 +1,26 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Each signed-in user can only see and change their own lessons and settings
+    // Only these Google accounts can use the app
+    function family() {
+      return request.auth != null
+          && request.auth.token.email_verified == true
+          && request.auth.token.email in ['jezkovicau@gmail.com', 'daniel.urban85@gmail.com'];
+    }
+    function validWrite() {
+      return request.resource.data.json is string
+          && request.resource.data.json.size() < 900000;
+    }
+
+    // Lessons and settings shared by the whole family
+    match /spaces/family/data/{key} {
+      allow read, delete: if family();
+      allow create, update: if family() && validWrite();
+    }
+
+    // Older per-user space: kept readable for its owner so lessons can be moved to the family space
     match /users/{uid}/data/{key} {
-      allow read, delete: if request.auth != null && request.auth.uid == uid;
-      allow create, update: if request.auth != null && request.auth.uid == uid
-                            && request.resource.data.json is string
-                            && request.resource.data.json.size() < 900000;
+      allow read: if family() && request.auth.uid == uid;
     }
   }
 }

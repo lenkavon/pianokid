@@ -44,11 +44,16 @@ It creates the service-account secret in the repo and writes the workflows
 (deploy on push to `main`, preview channel on pull requests).
 It deploys hosting only; after changing `firestore.rules`, run `firebase deploy --only firestore:rules`.
 
-## Data
+## Data and access
 
-`users/{uid}/data/exercises` and `users/{uid}/data/settings`, each a JSON string in field `json`.
-Rules (`firestore.rules`) let a user read and write only their own documents.
-On first sign-in, lessons already in that browser are copied to the account if the account is empty.
+Lessons and settings are shared by the family: `spaces/family/data/exercises` and `.../settings`,
+each a JSON string in field `json`.
+Only the Google accounts listed in `firestore.rules` (`family()`) can read or write them; anyone else
+who signs in sees a "No access" screen. To add a person, add their email there and run
+`firebase deploy --only firestore:rules` (the GitHub workflow deploys hosting only).
+
+When the family space is empty, the first sign-in copies lessons from that user's older private
+space (`users/{uid}/data`) or, failing that, from the browser.
 
 ## Keyboard
 

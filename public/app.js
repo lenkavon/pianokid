@@ -32,7 +32,7 @@ function ink(hex){ const n=parseInt(hex.slice(1),16); const r=n>>16&255,g=n>>8&2
 
 // ---------- Storage ----------
 // Firestore when hosted on Firebase and signed in; browser storage otherwise (local dev).
-let backend = null, cloud = null, loadFailed = false;
+let backend = null, cloud = null, loadFailed = false, noAccess = false;
 const store = {
   async get(k){ try{
       if (backend) return await backend.get(k);
@@ -469,25 +469,39 @@ async function load(){
     try{
       exercises = (await backend.get('exercises')) || [];
       const s = await backend.get('settings'); if (s) settings = mergeSettings(s);
-    }catch(e){ console.error(e); loadFailed = true; toast('Offline: lessons could not load.'); }
+    }catch(e){
+      console.error(e); loadFailed = true;
+      if (e.code === 'permission-denied'){ noAccess = true; return; }   // signed in with an account not on the list
+      toast('Offline: lessons could not load.');
+    }
   } else {
     exercises = (await store.get('exercises')) || [];
     const s = await store.get('settings'); if (s) settings = mergeSettings(s);
   }
 }
 
-// First sign-in: move lessons from this browser into the account, but only if the account is empty
+// Fill an empty family space once: from this user's earlier private space, else from this browser
 async function migrateLocal(){
-  let local = null;
-  try{ local = JSON.parse(localStorage.getItem('exercises') || 'null'); }catch(e){}
+  try{ if (await backend.get('exercises')) return; }catch(e){ return; }   // already filled, or unknown (offline / no access) → do nothing
+  let local = null, from = 'this phone';
+  try{
+    const mine = cloud.store(['users', cloud.user.uid, 'data']);
+    local = await mine.get('exercises');
+    const s = await mine.get('settings'); if (local && local.length){ from = 'your account'; if (s) store.set('settings', s); }
+  }catch(e){}
+  if (!local || !local.length){ try{ local = JSON.parse(localStorage.getItem('exercises') || 'null'); }catch(e){} }
   if (!local || !local.length) return;
-  try{ if (await backend.get('exercises')) return; }catch(e){ return; }   // unknown (offline) → do nothing
   local.forEach(ex => delete ex.hasPhoto);
   store.set('exercises', local);                       // queued; don't wait for the server
-  try{ const s = JSON.parse(localStorage.getItem('settings') || 'null'); if (s) store.set('settings', s); }catch(e){}
-  toast(`Moved ${local.length} lesson${local.length === 1 ? '' : 's'} from this phone to your account`);
+  if (from === 'this phone'){ try{ const s = JSON.parse(localStorage.getItem('settings') || 'null'); if (s) store.set('settings', s); }catch(e){} }
+  toast(`Moved ${local.length} lesson${local.length === 1 ? '' : 's'} from ${from} to the family lessons`);
 }
 
+function noAccessHTML(){
+  return `<section class="done"><div class="ico-big" aria-hidden="true">🔒</div><h1>No access</h1>
+    <p class="muted">${esc(cloud.user.email || '')} is not on the family list.</p>
+    <button class="btn" data-act="sign-out">Use another account</button></section>`;
+}
 function signInHTML(){
   return `<section class="done"><div class="ico-big" aria-hidden="true">🎹</div><h1>Piano steps</h1>
     <p class="muted">Sign in to keep lessons in sync on every device.</p>
@@ -498,8 +512,9 @@ function signInHTML(){
 (async () => {
   try{ cloud = await connectCloud(); }catch(e){ console.error(e); cloud = null; }
   if (cloud && !cloud.user){ renderBar(); document.getElementById('app').innerHTML = signInHTML(); return; }
-  if (cloud){ backend = cloud.store(cloud.user.uid); await migrateLocal(); }
+  if (cloud){ backend = cloud.store(['spaces', 'family', 'data']); await migrateLocal(); }
   await load();
+  if (noAccess){ renderBar(); document.getElementById('app').innerHTML = noAccessHTML(); return; }
   render();
   initMidi();
 })();

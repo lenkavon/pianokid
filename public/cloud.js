@@ -1,4 +1,4 @@
-// Firebase: Google sign-in + Firestore, each user's data under users/{uid}/data/{key}.
+// Firebase: Google sign-in + Firestore. Lessons are shared by the family under spaces/family/data/{key}.
 // Config comes from Firebase Hosting's reserved URL, so there's nothing to paste.
 // Anywhere else (local dev server) connectCloud() returns null and the app uses browser storage.
 const V = '13.4.0';
@@ -48,8 +48,9 @@ export async function connectCloud() {
       }
     },
     signOut: () => signOut(auth),
-    store(uid) {
-      const ref = k => doc(db, 'users', uid, 'data', k);
+    // path: collection segments, e.g. ['spaces', 'family', 'data']
+    store(path) {
+      const ref = k => doc(db, ...path, k);
       return {
         // throws when offline and nothing is cached, so callers can tell "missing" from "unknown"
         async get(k) {
