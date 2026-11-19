@@ -8,7 +8,7 @@ const DEFAULT_COLORS = {C:'#E5333F',D:'#F5911E',E:'#F7CF1E',F:'#3BAA4A',G:'#20AF
 const DEFAULT_FINGER = {1:'#E5333F',2:'#F5911E',3:'#F7CF1E',4:'#3BAA4A',5:'#2F7FD0'};
 // style 'notes' = colour by note; 'fingers' = sheet is coloured finger numbers → colour by finger, big circle shows the finger
 const DEFAULT_BLACK = {'C#':'#8E1B24','D#':'#A85A0C','F#':'#1F6B2A','G#':'#0D6577','A#':'#4B2A85'};
-let settings = {naming:'H', style:'notes', appSound:false, stepSize:4, colors:{...DEFAULT_COLORS}, blackColors:{...DEFAULT_BLACK}, fingerColors:{...DEFAULT_FINGER}}; // Czech naming: B natural is called H
+let settings = {naming:'H', style:'notes', appSound:false, colors:{...DEFAULT_COLORS}, blackColors:{...DEFAULT_BLACK}, fingerColors:{...DEFAULT_FINGER}}; // Czech naming: B natural is called H
 // black keys: darker shade of the white key below by default; set them to match the stickers / sheet
 const mergeSettings = s => ({...settings, ...s, colors:{...DEFAULT_COLORS, ...(s.colors||{})}, blackColors:{...DEFAULT_BLACK, ...(s.blackColors||{})}, fingerColors:{...DEFAULT_FINGER, ...(s.fingerColors||{})}});
 
@@ -163,11 +163,11 @@ const listen = (notes, bpm, onStep) => runSeq(notes.map(n => ({p:n.p, wait:60000
 const hearChip = i => document.querySelectorAll('.chip').forEach((c, j) => c.classList.toggle('hear', j === i));
 
 // ---------- Blocks ----------
-function blocksOf(ex){                      // → [[start, end), ...]
-  const N = ex.notes.length, custom = ex.notes.some(n => n.br), size = settings.stepSize, out = [];
+function blocksOf(ex){                      // → [[start, end), ...]; no breaks set = whole piece in one go
+  const N = ex.notes.length, out = [];
   let a = 0;
   for (let i = 0; i < N; i++){
-    const end = i === N-1 || (custom ? !!ex.notes[i].br : (size && (i+1) % size === 0));
+    const end = i === N-1 || !!ex.notes[i].br;
     if (end){ out.push([a, i+1]); a = i+1; }
   }
   return out;
@@ -280,7 +280,7 @@ function homeHTML(){
       <span class="muted">${ex.notes.length} notes</span>${starsHTML(ex.best||0)}</div>
       <button class="btn quiet" data-act="edit" data-id="${ex.id}">Edit</button>
       <button class="btn primary big" data-act="play" data-id="${ex.id}">Play</button></div>`;
-  return h + `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, steps, colors, backup</button></div>`;
+  return h + `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, colors, backup</button></div>`;
 }
 function editHTML(){
   const lo = (edit.oct+1)*12, hi = lo+23, sel = edit.notes[edit.sel];
@@ -297,8 +297,8 @@ function editHTML(){
       <div class="seg" aria-label="Finger">${[1,2,3,4,5].map(v => `<button class="${sel.f === v ? 'on' : ''}" data-act="finger" data-v="${v}">${v}</button>`).join('')}</div>
       <button class="btn${sel.br ? ' primary' : ' quiet'}" data-act="br">${sel.br ? 'Block ends here ✓' : 'End block here'}</button>
       <button class="btn danger" data-act="del-note">Delete note</button></div>`;
-  if (edit.notes.length) h += `<div class="row" style="margin-top:8px"><span class="muted">Blocks: ${blocksOf(edit).map(([a,b]) => b-a).join(' + ')} notes</span>
-      <button class="btn quiet" data-act="split-hand">Split by hand</button><button class="btn quiet" data-act="clear-br">Clear blocks</button></div>`;
+  if (edit.notes.length) h += `<div class="row" style="margin-top:8px"><span class="muted">${blocksOf(edit).length > 1 ? `Blocks: ${blocksOf(edit).map(([a,b]) => b-a).join(' + ')} notes` : 'No blocks: whole piece in one go'}</span>
+      <button class="btn quiet" data-act="split-hand">Split by hand</button><button class="btn quiet" data-act="clear-br">No blocks</button></div>`;
   const fb = (h, f) => `<button data-act="addf" data-h="${h}" data-v="${f}" style="box-shadow:inset 0 -6px 0 ${settings.fingerColors[f]}">${f}</button>`;
   const thumb = h => `<div class="row"><span class="muted">${h === 'L' ? 'Left' : 'Right'} thumb on</span><div class="seg">
       <button data-act="thumb" data-h="${h}" data-v="-1" aria-label="Move down">◀</button><b>${name(edit['thumb'+h])}${octave(edit['thumb'+h])}</b>
@@ -359,8 +359,6 @@ function settingsHTML(){
     <span class="field">Sound</span>
     <div class="seg">${[[false,'Keyboard'],[true,'Phone, correct notes only']].map(([k,l]) => `<button class="${settings.appSound === k ? 'on' : ''}" data-act="sound" data-v="${k}">${l}</button>`).join('')}</div>
     <p class="muted" style="margin:6px 0 0">With Phone, turn the Casio's volume to 0, so wrong keys make no sound.</p>
-    <span class="field">Notes per step (for exercises without blocks)</span>
-    <div class="seg">${[3,4,5,0].map(k => `<button class="${settings.stepSize === k ? 'on' : ''}" data-act="step" data-v="${k}">${k || 'All'}</button>`).join('')}</div>
     <span class="field">The teacher's sheet shows</span>
     <div class="seg">${[['notes','Colored notes'],['fingers','Colored finger numbers']].map(([k,l]) => `<button class="${settings.style === k ? 'on' : ''}" data-act="style" data-v="${k}">${l}</button>`).join('')}</div>
     <span class="field">Finger colors</span>
@@ -432,7 +430,6 @@ document.addEventListener('click', async e => {
     case 'thumb': { const k = 'thumb'+b.dataset.h; edit[k] = clamp(whiteStep(edit[k], +v), 36, 84); render(); } break;
     case 'style': settings.style = v; await store.set('settings', settings); render(); break;
     case 'sound': settings.appSound = v === 'true'; await store.set('settings', settings); render(); break;
-    case 'step': settings.stepSize = +v; await store.set('settings', settings); render(); break;
     case 'next-step': play.stepDone = false; render(); break;
     case 'oct': edit.oct = clamp(edit.oct + (+v), 1, 6); render(); break;
     case 'icon': edit.icon = v; render(); break;
