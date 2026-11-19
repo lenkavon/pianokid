@@ -1,0 +1,498 @@
+import { connectCloud } from './cloud.js';
+
+// ---------- Notes & colours ----------
+const PC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const BLACK = new Set([1,3,6,8,10]);
+// Boomwhacker-style default; edit in Settings to match the teacher's sheet
+const DEFAULT_COLORS = {C:'#E5333F',D:'#F5911E',E:'#F7CF1E',F:'#3BAA4A',G:'#20AFC4',A:'#7B4FC4',B:'#E2468C'};
+const DEFAULT_FINGER = {1:'#E5333F',2:'#F5911E',3:'#F7CF1E',4:'#3BAA4A',5:'#2F7FD0'};
+// style 'notes' = colour by note; 'fingers' = sheet is coloured finger numbers → colour by finger, big circle shows the finger
+const DEFAULT_BLACK = {'C#':'#8E1B24','D#':'#A85A0C','F#':'#1F6B2A','G#':'#0D6577','A#':'#4B2A85'};
+let settings = {naming:'H', style:'notes', appSound:false, stepSize:4, colors:{...DEFAULT_COLORS}, blackColors:{...DEFAULT_BLACK}, fingerColors:{...DEFAULT_FINGER}}; // Czech naming: B natural is called H
+// black keys: darker shade of the white key below by default; set them to match the stickers / sheet
+const mergeSettings = s => ({...settings, ...s, colors:{...DEFAULT_COLORS, ...(s.colors||{})}, blackColors:{...DEFAULT_BLACK, ...(s.blackColors||{})}, fingerColors:{...DEFAULT_FINGER, ...(s.fingerColors||{})}});
+
+const CZ = {'B':'H','C#':'Cis','D#':'Dis','F#':'Fis','G#':'Gis','A#':'Ais'};   // Czech names
+const name = p => { const n = PC[p%12]; return settings.naming === 'H' ? (CZ[n] || n) : n; };
+const octave = p => Math.floor(p/12) - 1;              // MIDI 60 = C4 (middle C)
+const color = p => (BLACK.has(p%12) ? settings.blackColors : settings.colors)[PC[p%12]];
+const nColor = n => settings.style === 'fingers' ? settings.fingerColors[n.f] : color(n.p);
+const nLabel = n => settings.style === 'fingers' ? n.f : name(n.p);
+const whiteIndex = p => Math.floor(p/12)*7 + [0,0,1,1,2,3,3,4,4,5,5,6][p%12];
+// white-key index → MIDI pitch, and "n white keys up/down"
+const whiteToPitch = w => Math.floor(w/7)*12 + [0,2,4,5,7,9,11][((w%7)+7)%7];
+const whiteStep = (p, d) => whiteToPitch(whiteIndex(p) + d);
+// five-finger position: right hand fingers go up from the thumb, left hand fingers go down from the thumb
+const fingerPitch = (h, f, thumb) => whiteStep(thumb, h === 'R' ? f-1 : -(f-1));
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function ink(hex){ const n=parseInt(hex.slice(1),16); const r=n>>16&255,g=n>>8&255,b=n&255;
+  return (0.299*r+0.587*g+0.114*b) > 160 ? '#1F2B33' : '#FFFFFF'; }
+
+// ---------- Storage ----------
+// Firestore when hosted on Firebase and signed in; browser storage otherwise (local dev).
+let backend = null, cloud = null, loadFailed = false;
+const store = {
+  async get(k){ try{
+      if (backend) return await backend.get(k);
+      const v = localStorage.getItem(k); return v ? JSON.parse(v) : null;
+    }catch(e){ console.error(e); return null; } },
+  async set(k,v){ try{
+      // Firestore: don't await. Offline, the write is queued in the local cache and the promise only settles once online.
+      if (backend){ backend.set(k, v).catch(e => { console.error(e); toast('Could not sync. Check the connection.'); }); return true; }
+      localStorage.setItem(k, JSON.stringify(v)); return true;
+    }catch(e){ console.error(e); return false; } },
+  async del(k){ try{
+      if (backend) backend.del(k).catch(e => console.error(e)); else localStorage.removeItem(k);
+    }catch(e){} }
+};
+
+// ---------- State ----------
+let exercises = [];          // {id, name, icon, notes:[{p,f,h,br}], bpm, thumbR, thumbL, best}
+const ICONS = ['🎵','🐝','🐞','🦋','🐸','🐱','🐶','🐻','🦊','🐰','🐢','🐟','🦄','🐉','🌈','⭐','🌙','☀️','🌸','🍎','🍓','🎈','🚂','🚀','🏰','🎄','⛄','🎃','🐣','🦆'];
+let view = 'home';
+let edit = null;             // {id, name, icon, notes, sel, oct, isNew, thumbR, thumbL, bpm}
+let play = null;             // {ex, i, first, clean, misses, log, stars}
+
+async function saveList(){
+  if (loadFailed){ toast('Lessons did not load, so saving is off. Reload when online.'); return; } // never overwrite cloud data with an empty list
+  if (!await store.set('exercises', exercises)) toast('Could not save. Storage may be full.');
+}
+
+// ---------- MIDI ----------
+let midiState = 'idle', midiName = '', midiAccess = null;
+async function initMidi(){
+  if (!navigator.requestMIDIAccess){ midiState = 'unsupported'; renderBar(); return; }
+  try{
+    midiAccess = await navigator.requestMIDIAccess();   // no sysex needed: note-on is enough
+    midiAccess.onstatechange = bindInputs;               // replug the cable without reloading
+    bindInputs();
+  }catch(e){ midiState = 'denied'; renderBar(); }
+}
+function bindInputs(){
+  const names = [];
+  for (const inp of midiAccess.inputs.values()){
+    inp.onmidimessage = onMidi;
+    if (inp.state === 'connected') names.push(inp.name);
+  }
+  midiState = names.length ? 'ok' : 'none'; midiName = names[0] || '';
+  renderBar();
+}
+function onMidi(e){
+  const [st, note, vel] = e.data;
+  if ((st & 0xF0) === 0x90 && vel > 0) handleNote(note, 'midi'); // note-on; vel 0 = note-off, ignored
+}
+
+// Sound from the phone. appSound = Casio volume at 0 and only correct notes are heard ("silent mistakes")
+let ac;
+function audio(){ if (!ac) ac = new AudioContext({latencyHint:'interactive'}); if (ac.state === 'suspended') ac.resume(); return ac; }
+document.addEventListener('click', () => { try{ audio(); }catch(e){} }, true); // unlock on first tap (e.g. the Play button)
+function blip(p){ try{
+  const a = audio(), t = a.currentTime, fq = 440*Math.pow(2,(p-69)/12);
+  const g = a.createGain(); g.connect(a.destination);
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.35,t+0.008); g.gain.exponentialRampToValueAtTime(0.0001,t+1.2);
+  for (const [type, mul, vol] of [['triangle',1,1],['sine',2,0.3]]){ // simple piano-ish tone: fundamental + soft octave
+    const o = a.createOscillator(), og = a.createGain(); o.type = type; o.frequency.value = fq*mul; og.gain.value = vol;
+    o.connect(og).connect(g); o.start(t); o.stop(t+1.25);
+  }
+}catch(e){} }
+
+function handleNote(p, src){
+  stopPlayback();
+  if (view === 'edit'){ if (src === 'screen' || settings.appSound) blip(p); addNote(p); }
+  else if (view === 'play') playNote(p, src);
+  else if (src === 'screen') blip(p);
+  const k = document.querySelector(`.key[data-p="${p}"]`);
+  if (k){ k.classList.add('down'); setTimeout(() => k.classList.remove('down'), 150); }
+}
+
+// ---------- Editor ----------
+function newExercise(){ edit = {id:uid(), name:'', notes:[], icon:'🎵', sel:-1, oct:4, isNew:true, thumbR:60, thumbL:55, bpm:80}; view = 'edit'; render(); } // default C position: RH thumb C4, LH thumb G3
+async function openEdit(id){
+  const ex = exercises.find(x => x.id === id);
+  const lowest = Math.min(...ex.notes.map(n => n.p));
+  edit = {id, name:ex.name, notes:ex.notes.map(n => ({...n})), icon: ex.icon || '🎵',
+          sel: ex.notes.length-1, oct: clamp(octave(lowest),1,6), isNew:false, thumbR: ex.thumbR || 60, thumbL: ex.thumbL || 55, bpm: ex.bpm || 80};
+  view = 'edit'; render();
+}
+function addNote(p){
+  // Insert after the selected chip, so you can fix a missed note mid-sequence
+  const prev = edit.notes[edit.sel];
+  let h = 'R', f = 1;
+  if (prev){ // finger guess: move by white-key steps from the previous note (you correct it if wrong)
+    h = prev.h; const d = whiteIndex(p) - whiteIndex(prev.p);
+    f = clamp(h === 'R' ? prev.f + d : prev.f - d, 1, 5);
+  }
+  insertNote(p, f, h);
+}
+function insertNote(p, f, h){ edit.notes.splice(edit.sel+1, 0, {p, f, h}); edit.sel++; render(); }
+async function saveEdit(){
+  if (!edit.notes.length){ toast('Add at least one note'); return; }
+  let ex = exercises.find(x => x.id === edit.id);
+  if (!ex){ ex = {id:edit.id, best:0}; exercises.unshift(ex); }
+  ex.name = edit.name.trim() || ('Exercise ' + exercises.length);
+  ex.notes = edit.notes; ex.thumbR = edit.thumbR; ex.thumbL = edit.thumbL; ex.bpm = edit.bpm;
+  ex.icon = edit.icon;
+  if (ex.hasPhoto){ delete ex.hasPhoto; await store.del('photo:'+ex.id); }   // drop photos from older versions
+  await saveList(); edit = null; view = 'home'; render();
+}
+
+// ---------- Playback: Listen (at tempo) and replay (her real timing) ----------
+let playback = null;
+function stopPlayback(){ if (!playback) return; clearTimeout(playback.timer); playback = null;
+  document.querySelectorAll('.chip.hear').forEach(c => c.classList.remove('hear')); }
+function sound(p){
+  // Keyboard sound mode + Casio connected → the Casio plays it; otherwise the phone does
+  const outs = midiAccess ? [...midiAccess.outputs.values()].filter(o => o.state === 'connected') : [];
+  if (!settings.appSound && outs.length){ for (const o of outs){ o.send([0x90, p, 90]); o.send([0x80, p, 0], performance.now() + 450); } }
+  else blip(p);
+}
+function flash(p){ const k = document.querySelector(`.key[data-p="${p}"]`); if (k){ k.classList.add('down'); setTimeout(() => k.classList.remove('down'), 250); } }
+function runSeq(seq, onStep){            // seq: [{p, wait}], wait = ms after the previous note
+  stopPlayback(); let i = 0;
+  const tick = () => {
+    if (!playback) return;
+    if (i >= seq.length){ stopPlayback(); return; }
+    sound(seq[i].p); flash(seq[i].p); onStep && onStep(i); i++;
+    if (i < seq.length) playback.timer = setTimeout(tick, seq[i].wait); else playback.timer = setTimeout(tick, 400);
+  };
+  playback = {timer: setTimeout(tick, 150)};
+}
+const listen = (notes, bpm, onStep) => runSeq(notes.map(n => ({p:n.p, wait:60000/bpm})), onStep);  // one note per beat
+const hearChip = i => document.querySelectorAll('.chip').forEach((c, j) => c.classList.toggle('hear', j === i));
+
+// ---------- Blocks ----------
+function blocksOf(ex){                      // → [[start, end), ...]
+  const N = ex.notes.length, custom = ex.notes.some(n => n.br), size = settings.stepSize, out = [];
+  let a = 0;
+  for (let i = 0; i < N; i++){
+    const end = i === N-1 || (custom ? !!ex.notes[i].br : (size && (i+1) % size === 0));
+    if (end){ out.push([a, i+1]); a = i+1; }
+  }
+  return out;
+}
+const blockIndex = (blocks, i) => blocks.findIndex(([a, b]) => i >= a && i < b);
+function splitByHand(notes){                 // one block per run of the same hand
+  notes.forEach((n, i) => { n.br = !!notes[i+1] && notes[i+1].h !== n.h; });
+}
+
+// ---------- Practice (wait mode) ----------
+let wake = null;
+async function keepAwake(){ try{ wake = await navigator.wakeLock?.request('screen'); }catch(e){} }
+function releaseWake(){ try{ wake?.release(); }catch(e){} wake = null; }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && view === 'play') keepAwake(); });
+
+async function startPlay(id){
+  const ex = exercises.find(x => x.id === id);
+  play = {ex, i:0, first:true, clean:0, misses:0, log:[]};
+  view = 'play'; keepAwake(); render();
+}
+function playNote(p, src){
+  if (play.stepDone){ play.stepDone = false; render(); return; }   // any key = open the next step
+  const t = play.ex.notes[play.i]; if (!t) return;
+  play.log.push({p, t: performance.now(), ok: p === t.p});
+  if (p === t.p){
+    if (settings.appSound || src === 'screen') blip(p);
+    if (play.first) play.clean++;          // score = notes right on the first try
+    play.i++; play.first = true;
+    if (play.i >= play.ex.notes.length){ finish(); return; }
+    if (blocksOf(play.ex).some(([, b]) => b === play.i)){ play.stepDone = true; render(); return; }  // pause like finishing a Lego bag
+    render(); burst();
+  } else {
+    if (!settings.appSound && src === 'screen') blip(p);
+    play.first = false; play.misses++;     // with appSound: silent; never a buzzer or red X
+  }
+}
+async function finish(){
+  const r = play.clean / play.ex.notes.length;
+  play.stars = r >= 0.9 ? 3 : r >= 0.7 ? 2 : 1; // finishing always earns at least 1 star
+  if (play.stars > (play.ex.best||0)){ play.ex.best = play.stars; saveList(); }
+  releaseWake(); view = 'done'; render();
+}
+function burst(){
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const w = document.querySelector('.bubble-wrap'); if (!w) return;
+  for (let k = 0; k < 8; k++){
+    const s = document.createElement('span'), a = k/8*Math.PI*2;
+    s.className = 'spark'; s.textContent = '★';
+    s.style.setProperty('--x', Math.cos(a)*120 + 'px'); s.style.setProperty('--y', Math.sin(a)*120 + 'px');
+    w.appendChild(s); setTimeout(() => s.remove(), 700);
+  }
+}
+
+// ---------- Backup ----------
+async function exportAll(){
+  const blob = new Blob([JSON.stringify({v:2, settings, exercises})], {type:'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'piano-steps-backup.json';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+async function importAll(file){
+  try{
+    const d = JSON.parse(await file.text());
+    if (!Array.isArray(d.exercises)) throw new Error('bad file');
+    let added = 0;
+    for (const ex of d.exercises){
+      if (exercises.some(x => x.id === ex.id)) continue;
+      delete ex.hasPhoto; exercises.push(ex); added++;
+    }
+    if (d.settings) settings = mergeSettings(d.settings);
+    await store.set('settings', settings); await saveList();
+    toast(`Restored ${added} exercise${added === 1 ? '' : 's'}`); render();
+  }catch(e){ toast('That file is not a Piano steps backup'); }
+}
+
+// ---------- Rendering ----------
+function keyAttrs(p, target, extra='', tc){
+  const t = p === target, c = tc || color(p);
+  return `class="key ${BLACK.has(p%12) ? 'black' : 'white'}${t ? ' target' : ''}" data-p="${p}" `
+       + `style="--kc:${settings.style === 'notes' ? color(p) : 'transparent'};${t ? `--c:${c};--ci:${ink(c)};` : ''}${extra}" aria-label="${name(p)}${octave(p)}"`;
+}
+function keyboardHTML(lo, hi, target, labels, tc){
+  const whites = []; for (let p = lo; p <= hi; p++) if (!BLACK.has(p%12)) whites.push(p);
+  const W = 100/whites.length, w0 = whiteIndex(lo);
+  let h = `<div class="kbd" style="min-width:${whites.length*32}px"><div class="whites">`;
+  for (const p of whites)
+    h += `<button ${keyAttrs(p,target,'',tc)}>${p === 60 ? '<i class="mc"></i>' : ''}<span>${labels || p === target ? name(p) : ''}</span></button>`;
+  h += '</div>';
+  for (let p = lo; p <= hi; p++) if (BLACK.has(p%12)){
+    const left = (whiteIndex(p) - w0 + 1)*W - W*0.3;   // centred on the line between two white keys
+    h += `<button ${keyAttrs(p, target, `left:${left}%;width:${W*0.6}%;`, tc)}>${labels || p === target ? name(p) : ''}</button>`;
+  }
+  return h + '</div>';
+}
+function handSVG(h, f, c){
+  // Back of the hand, fingers up. Right hand: thumb on the left. Left hand = mirror.
+  const fill = i => i === f ? c : '#FFFFFF', sw = i => i === f ? 5 : 3;
+  const fing = (i, x, y, w, ht, tr='') => `<rect x="${x}" y="${y}" width="${w}" height="${ht}" rx="${w/2}" ${tr} fill="${fill(i)}" stroke="#1F2B33" stroke-width="${sw(i)}"/>`;
+  const g = fing(2,38,28,16,58) + fing(3,56,14,16,72) + fing(4,74,22,16,64) + fing(5,92,42,14,46)
+          + fing(1,22,66,16,50,'transform="rotate(-35 30 114)"')
+          + `<rect x="34" y="74" width="72" height="58" rx="22" fill="#FFFFFF" stroke="#1F2B33" stroke-width="3"/>`;
+  return `<svg viewBox="0 0 120 140" aria-hidden="true">${h === 'L' ? `<g transform="translate(120 0) scale(-1 1)">${g}</g>` : g}</svg>`;
+}
+const starsHTML = n => `<span class="stars">${[1,2,3].map(k => `<span class="${k <= n ? '' : 'off'}">★</span>`).join('')}</span>`;
+
+function homeHTML(){
+  let h = `<div class="row spread"><h1>Exercises</h1><button class="btn primary" data-act="new">Add exercise</button></div>`;
+  if (!exercises.length) h += `<div class="empty">No exercises yet. Add one from the teacher's sheet: pick an icon, enter the notes, and set a finger for each.</div>`;
+  for (const ex of exercises) h += `<div class="card"><span class="ico" aria-hidden="true">${ex.icon || '🎵'}</span><div class="info"><h2>${esc(ex.name)}</h2>
+      <div class="dots">${ex.notes.slice(0,16).map(n => `<i class="dot" style="background:${nColor(n)}"></i>`).join('')}</div>
+      <span class="muted">${ex.notes.length} notes</span>${starsHTML(ex.best||0)}</div>
+      <button class="btn quiet" data-act="edit" data-id="${ex.id}">Edit</button>
+      <button class="btn primary big" data-act="play" data-id="${ex.id}">Play</button></div>`;
+  return h + `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, steps, colors, backup</button></div>`;
+}
+function editHTML(){
+  const lo = (edit.oct+1)*12, hi = lo+23, sel = edit.notes[edit.sel];
+  let h = `<div class="row spread"><button class="btn quiet" data-act="home">Cancel</button><b>${edit.isNew ? 'New exercise' : 'Edit exercise'}</b><button class="btn primary" data-act="save">Save</button></div>
+    <label class="field" for="exname">Name</label>
+    <input id="exname" type="text" value="${esc(edit.name)}" placeholder="Lesson 3, Little bee" autocomplete="off">
+    <span class="field">Icon</span>
+    <div class="icons">${ICONS.map(e => `<button class="${e === edit.icon ? 'on' : ''}" data-act="icon" data-v="${e}" aria-label="${e}">${e}</button>`).join('')}</div>
+    <span class="field">Notes: play them on the keyboard in order, or tap the keys below. New notes go after the selected one.</span>
+    <div class="strip">${edit.notes.map((n,i) => `<button class="chip${i === edit.sel ? ' sel' : ''}${n.br && i < edit.notes.length-1 ? ' br' : ''}" data-act="sel" data-i="${i}"><span class="c" style="background:${nColor(n)};color:${ink(nColor(n))}">${name(n.p)}</span><small>${n.h}${n.f}</small></button>`).join('')
+      || '<span class="muted" style="align-self:center">No notes yet</span>'}</div>`;
+  if (sel) h += `<div class="row controls"><b>${name(sel.p)}${octave(sel.p)}</b>
+      <div class="seg">${['L','R'].map(v => `<button class="${sel.h === v ? 'on' : ''}" data-act="hand" data-v="${v}">${v === 'L' ? 'Left' : 'Right'}</button>`).join('')}</div>
+      <div class="seg" aria-label="Finger">${[1,2,3,4,5].map(v => `<button class="${sel.f === v ? 'on' : ''}" data-act="finger" data-v="${v}">${v}</button>`).join('')}</div>
+      <button class="btn${sel.br ? ' primary' : ' quiet'}" data-act="br">${sel.br ? 'Block ends here ✓' : 'End block here'}</button>
+      <button class="btn danger" data-act="del-note">Delete note</button></div>`;
+  if (edit.notes.length) h += `<div class="row" style="margin-top:8px"><span class="muted">Blocks: ${blocksOf(edit).map(([a,b]) => b-a).join(' + ')} notes</span>
+      <button class="btn quiet" data-act="split-hand">Split by hand</button><button class="btn quiet" data-act="clear-br">Clear blocks</button></div>`;
+  const fb = (h, f) => `<button data-act="addf" data-h="${h}" data-v="${f}" style="box-shadow:inset 0 -6px 0 ${settings.fingerColors[f]}">${f}</button>`;
+  const thumb = h => `<div class="row"><span class="muted">${h === 'L' ? 'Left' : 'Right'} thumb on</span><div class="seg">
+      <button data-act="thumb" data-h="${h}" data-v="-1" aria-label="Move down">◀</button><b>${name(edit['thumb'+h])}${octave(edit['thumb'+h])}</b>
+      <button data-act="thumb" data-h="${h}" data-v="1" aria-label="Move up">▶</button></div></div>`;
+  h += `<span class="field">Tempo</span>
+    <div class="row"><div class="seg"><button data-act="bpm" data-v="-10" aria-label="Slower">−</button><b>${edit.bpm} bpm</b><button data-act="bpm" data-v="10" aria-label="Faster">+</button></div>
+      <button class="btn" data-act="listen-edit"${edit.notes.length ? '' : ' disabled'}>▶ Listen</button></div>`;
+  h += `<span class="field">Add by finger number, as on the sheet</span>
+    <div class="row"><div class="seg"><b>Left</b>${[5,4,3,2,1].map(f => fb('L',f)).join('')}</div>
+      <div class="seg"><b>Right</b>${[1,2,3,4,5].map(f => fb('R',f)).join('')}</div></div>
+    <div class="row" style="margin-top:8px">${thumb('L')}${thumb('R')}</div>`;
+  h += `<div class="row spread oct"><button class="btn quiet" data-act="oct" data-v="-1" aria-label="Lower octave">◀</button>
+      <span class="muted">${name(lo)}${octave(lo)} to ${name(hi)}${octave(hi)}</span>
+      <button class="btn quiet" data-act="oct" data-v="1" aria-label="Higher octave">▶</button></div>
+    <div class="kwrap">${keyboardHTML(lo, hi, -1, true)}</div>`;
+  if (!edit.isNew) h += `<div class="row" style="margin-top:20px"><button class="btn danger" data-act="del-ex">Delete exercise</button></div>`;
+  return h;
+}
+function wallHTML(ex, done, fresh){
+  // one brick per note; a row per step; dashed bricks = the plan still to build
+  const brick = i => i < done ? `<i class="brick${fresh && i === done-1 ? ' new' : ''}" style="--b:${nColor(ex.notes[i])}"></i>` : '<i class="brick ghost"></i>';
+  return `<div class="wall" aria-label="${done} of ${ex.notes.length} bricks">${blocksOf(ex).map(([a, b]) =>
+    `<div class="wrow">${Array.from({length: b-a}, (_, k) => brick(a+k)).join('')}</div>`).join('')}</div>`;
+}
+function playHTML(){
+  const ex = play.ex, N = ex.notes.length, blocks = blocksOf(ex), steps = blocks.length;
+  const head = label => `<div class="row"><button class="btn quiet" data-act="home">Stop</button><button class="btn quiet" data-act="listen-play" aria-label="Listen">▶ Listen</button>
+      <div class="progress"><i style="width:${play.i/N*100}%"></i></div><b>${label}</b></div>`;
+  if (play.stepDone){
+    const s = blocks.findIndex(([, b]) => b === play.i) + 1;
+    return `<section class="play">${head(`Step ${s} of ${steps}`)}
+      <div class="stepdone">${wallHTML(ex, play.i, true)}<h1>Step ${s} done!</h1>
+        <button class="btn primary big" data-act="next-step">Next step</button><p class="muted">or press any key</p></div></section>`;
+  }
+  const n = ex.notes[play.i], next = ex.notes[play.i+1], c = nColor(n);
+  const k = blockIndex(blocks, play.i), stepNo = k + 1, stepEnd = blocks[k][1];
+  const ps = ex.notes.map(x => x.p), lo = Math.floor(Math.min(...ps)/12)*12, hi = Math.floor(Math.max(...ps)/12)*12 + 11;
+  const then = play.i+1 === N ? 'last one!' : play.i+1 === stepEnd ? 'last in this step'
+    : `then <span class="mini" style="background:${nColor(next)};color:${ink(nColor(next))}">${nLabel(next)}</span>`;
+  return `<section class="play">${head(steps > 1 ? `Step ${stepNo} of ${steps}` : `${play.i+1}/${N}`)}
+    <div class="stage">
+      <div class="ico-big" aria-hidden="true">${ex.icon || '🎵'}</div>
+      <div class="bubble-wrap"><div class="bubble${String(nLabel(n)).length > 2 ? ' long' : ''}" style="background:${c};color:${ink(c)}">${nLabel(n)}</div><div class="then">${then}</div></div>
+      <div class="hand">${handSVG(n.h, n.f, c)}<div class="finger">${n.f}</div><div class="muted">${n.h === 'L' ? 'Left hand' : 'Right hand'}</div></div>
+      ${wallHTML(ex, play.i, play.i > 0)}
+    </div>
+    <div class="kwrap">${keyboardHTML(lo, hi, n.p, false, c)}</div></section>`;
+}
+function doneHTML(){
+  return `<section class="done"><div class="ico-big" aria-hidden="true">${play.ex.icon || '🎵'}</div>${wallHTML(play.ex, play.ex.notes.length, false)}<div class="bigstars">${[1,2,3].map(k => `<span class="${k <= play.stars ? '' : 'off'}">★</span>`).join('')}</div>
+    <h1>Well done!</h1><p class="muted">${play.clean} of ${play.ex.notes.length} notes right on the first try</p>
+    <div class="row center"><button class="btn" data-act="replay">▶ Hear how I played</button><button class="btn primary" data-act="again">Play again</button><button class="btn" data-act="home">All exercises</button></div></section>`;
+}
+function settingsHTML(){
+  return `<div class="row spread"><button class="btn quiet" data-act="home">Back</button><b>Settings</b><span></span></div>
+    <span class="field">Note names</span>
+    <div class="seg">${['H','B'].map(v => `<button class="${settings.naming === v ? 'on' : ''}" data-act="naming" data-v="${v}">C D E F G A ${v}</button>`).join('')}</div>
+    <span class="field">Sound</span>
+    <div class="seg">${[[false,'Keyboard'],[true,'Phone, correct notes only']].map(([k,l]) => `<button class="${settings.appSound === k ? 'on' : ''}" data-act="sound" data-v="${k}">${l}</button>`).join('')}</div>
+    <p class="muted" style="margin:6px 0 0">With Phone, turn the Casio's volume to 0, so wrong keys make no sound.</p>
+    <span class="field">Notes per step (for exercises without blocks)</span>
+    <div class="seg">${[3,4,5,0].map(k => `<button class="${settings.stepSize === k ? 'on' : ''}" data-act="step" data-v="${k}">${k || 'All'}</button>`).join('')}</div>
+    <span class="field">The teacher's sheet shows</span>
+    <div class="seg">${[['notes','Colored notes'],['fingers','Colored finger numbers']].map(([k,l]) => `<button class="${settings.style === k ? 'on' : ''}" data-act="style" data-v="${k}">${l}</button>`).join('')}</div>
+    <span class="field">Finger colors</span>
+    <div class="row">${[1,2,3,4,5].map(f => `<label class="swatch"><input type="color" data-fcolor="${f}" value="${settings.fingerColors[f]}"><span>${f}</span></label>`).join('')}</div>
+    <span class="field">Note colors</span>
+    <div class="row">${['C','D','E','F','G','A','B'].map(L => `<label class="swatch"><input type="color" data-color="${L}" value="${settings.colors[L]}"><span>${L === 'B' && settings.naming === 'H' ? 'H' : L}</span></label>`).join('')}</div>
+    <span class="field">Black key colors</span>
+    <div class="row">${Object.keys(DEFAULT_BLACK).map(L => `<label class="swatch"><input type="color" data-bcolor="${L}" value="${settings.blackColors[L]}"><span>${settings.naming === 'H' ? CZ[L] : L}</span></label>`).join('')}</div>
+    <div class="row" style="margin-top:10px"><button class="btn quiet" data-act="reset-colors">Reset colors</button></div>
+    ${cloud ? `<span class="field">Account</span>
+    <div class="row"><span>${esc(cloud.user.email || cloud.user.displayName || 'Signed in')}</span><button class="btn quiet" data-act="sign-out">Sign out</button></div>` : ''}
+    <span class="field">Backup</span>
+    <div class="row"><button class="btn" data-act="export">Save backup file</button>
+      <span class="btn quiet file">Restore from file<input id="import-in" type="file" accept="application/json,.json"></span></div>`;
+}
+function renderBar(){
+  const m = {ok:['ok','Keyboard: '+midiName], none:['','No keyboard found. Plug in USB.'], unsupported:['','Open in Chrome to use the keyboard'],
+             denied:['','Keyboard blocked. Tap to retry.'], idle:['','Connect keyboard']}[midiState];
+  const el = document.getElementById('midi'); el.className = 'pill ' + m[0]; el.textContent = m[1];
+}
+function render(){
+  renderBar();
+  const app = document.getElementById('app');
+  app.innerHTML = {home:homeHTML, edit:editHTML, play:playHTML, done:doneHTML, settings:settingsHTML}[view]();
+  if (view === 'edit') app.querySelector('.chip.sel')?.scrollIntoView({inline:'nearest', block:'nearest'});
+  if (view === 'play') app.querySelector('.key.target')?.scrollIntoView({inline:'center', block:'nearest'});
+}
+let toastT;
+function toast(msg){ const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 2600); }
+
+// ---------- Events ----------
+document.addEventListener('pointerdown', e => {
+  const k = e.target.closest('.key'); if (!k) return;
+  e.preventDefault(); handleNote(+k.dataset.p, 'screen');
+});
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const a = b.dataset.act, v = b.dataset.v;
+  switch (a){
+    case 'new': newExercise(); break;
+    case 'play': startPlay(b.dataset.id); break;
+    case 'edit': openEdit(b.dataset.id); break;
+    case 'br': edit.notes[edit.sel].br = !edit.notes[edit.sel].br; render(); break;
+    case 'split-hand': splitByHand(edit.notes); render(); break;
+    case 'clear-br': edit.notes.forEach(n => delete n.br); render(); break;
+    case 'bpm': edit.bpm = clamp(edit.bpm + (+v), 30, 200); render(); break;
+    case 'listen-edit': listen(edit.notes, edit.bpm, hearChip); break;
+    case 'listen-play': {
+      const [a, b] = blocksOf(play.ex)[blockIndex(blocksOf(play.ex), Math.min(play.i, play.ex.notes.length-1))];
+      listen(play.ex.notes.slice(a, b), play.ex.bpm || 80);   // just the current step
+    } break;
+    case 'replay': {
+      // her real timing; in phone-sound mode only the notes she actually heard (correct ones)
+      const L = play.log.filter(x => x.ok || !settings.appSound);
+      runSeq(L.map((x, i) => ({p:x.p, wait: i ? clamp(x.t - L[i-1].t, 80, 1500) : 0})));
+    } break;
+    case 'home': stopPlayback(); releaseWake(); view = 'home'; edit = null; play = null; render(); break;
+    case 'save': saveEdit(); break;
+    case 'del-ex':
+      if (confirm('Delete this exercise?')){
+        exercises = exercises.filter(x => x.id !== edit.id); await store.del('photo:'+edit.id);
+        await saveList(); edit = null; view = 'home'; render();
+      } break;
+    case 'sel': edit.sel = +b.dataset.i; render(); break;
+    case 'hand': edit.notes[edit.sel].h = v; render(); break;
+    case 'finger': edit.notes[edit.sel].f = +v; render(); break;
+    case 'del-note': edit.notes.splice(edit.sel, 1); edit.sel = Math.min(edit.sel, edit.notes.length-1); render(); break;
+    case 'addf': { const h = b.dataset.h, f = +v; insertNote(fingerPitch(h, f, edit['thumb'+h]), f, h); } break;
+    case 'thumb': { const k = 'thumb'+b.dataset.h; edit[k] = clamp(whiteStep(edit[k], +v), 36, 84); render(); } break;
+    case 'style': settings.style = v; await store.set('settings', settings); render(); break;
+    case 'sound': settings.appSound = v === 'true'; await store.set('settings', settings); render(); break;
+    case 'step': settings.stepSize = +v; await store.set('settings', settings); render(); break;
+    case 'next-step': play.stepDone = false; render(); break;
+    case 'oct': edit.oct = clamp(edit.oct + (+v), 1, 6); render(); break;
+    case 'icon': edit.icon = v; render(); break;
+    case 'again': startPlay(play.ex.id); break;
+    case 'settings': view = 'settings'; render(); break;
+    case 'naming': settings.naming = v; await store.set('settings', settings); render(); break;
+    case 'reset-colors': settings.colors = {...DEFAULT_COLORS}; settings.blackColors = {...DEFAULT_BLACK}; settings.fingerColors = {...DEFAULT_FINGER}; await store.set('settings', settings); render(); break;
+    case 'export': exportAll(); break;
+    case 'midi': initMidi(); break;
+    case 'sign-in':
+      try{ await cloud.signIn(); location.reload(); }catch(e){ console.error(e); toast('Sign-in failed. Try again.'); } break;
+    case 'sign-out': await cloud.signOut(); location.reload(); break;
+  }
+});
+document.getElementById('overlay').addEventListener('click', e => { e.currentTarget.hidden = true; });
+document.addEventListener('input', e => { if (e.target.id === 'exname') edit.name = e.target.value; });
+document.addEventListener('change', async e => {
+  const t = e.target;
+  if (t.id === 'import-in' && t.files[0]) importAll(t.files[0]);
+  else if (t.dataset.color){ settings.colors[t.dataset.color] = t.value; await store.set('settings', settings); }
+  else if (t.dataset.bcolor){ settings.blackColors[t.dataset.bcolor] = t.value; await store.set('settings', settings); render(); }
+  else if (t.dataset.fcolor){ settings.fingerColors[t.dataset.fcolor] = t.value; await store.set('settings', settings); }
+});
+
+// ---------- Start ----------
+async function load(){
+  if (backend){
+    try{
+      exercises = (await backend.get('exercises')) || [];
+      const s = await backend.get('settings'); if (s) settings = mergeSettings(s);
+    }catch(e){ console.error(e); loadFailed = true; toast('Offline: lessons could not load.'); }
+  } else {
+    exercises = (await store.get('exercises')) || [];
+    const s = await store.get('settings'); if (s) settings = mergeSettings(s);
+  }
+}
+
+// First sign-in: move lessons from this browser into the account, but only if the account is empty
+async function migrateLocal(){
+  let local = null;
+  try{ local = JSON.parse(localStorage.getItem('exercises') || 'null'); }catch(e){}
+  if (!local || !local.length) return;
+  try{ if (await backend.get('exercises')) return; }catch(e){ return; }   // unknown (offline) → do nothing
+  local.forEach(ex => delete ex.hasPhoto);
+  store.set('exercises', local);                       // queued; don't wait for the server
+  try{ const s = JSON.parse(localStorage.getItem('settings') || 'null'); if (s) store.set('settings', s); }catch(e){}
+  toast(`Moved ${local.length} lesson${local.length === 1 ? '' : 's'} from this phone to your account`);
+}
+
+function signInHTML(){
+  return `<section class="done"><div class="ico-big" aria-hidden="true">🎹</div><h1>Piano steps</h1>
+    <p class="muted">Sign in to keep lessons in sync on every device.</p>
+    <button class="btn primary big" data-act="sign-in">Sign in with Google</button></section>`;
+}
+
+(async () => {
+  try{ cloud = await connectCloud(); }catch(e){ console.error(e); cloud = null; }
+  if (cloud && !cloud.user){ renderBar(); document.getElementById('app').innerHTML = signInHTML(); return; }
+  if (cloud){ backend = cloud.store(cloud.user.uid); await migrateLocal(); }
+  await load();
+  render();
+  initMidi();
+})();

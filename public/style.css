@@ -1,0 +1,104 @@
+/* Design: quiet sage-gray chrome so the note colours (from the teacher's sheet) are the only loud thing.
+   Rounded type (Nunito) for a 5-year-old; big touch targets for the parent. */
+:root{--bg:#EEF2F0;--ink:#1F2B33;--muted:#5E6E75;--line:#D3DCD8;--panel:#FFFFFF;--accent:#2F6F73;--gold:#F2B705;--r:18px}
+*{box-sizing:border-box}
+[hidden]{display:none!important} /* #overlay sets display:grid, which overrode the hidden attribute */
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:Nunito,ui-rounded,"SF Pro Rounded",system-ui,sans-serif;font-weight:600;-webkit-tap-highlight-color:transparent}
+body{min-height:100dvh;display:flex;flex-direction:column}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,.file:focus-within{outline:3px solid var(--accent);outline-offset:2px}
+#bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px}
+#bar b{font-weight:900;font-size:1.1rem}
+.pill{border:2px solid var(--line);background:var(--panel);border-radius:999px;padding:6px 12px;font-size:.85rem;max-width:62vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pill.ok{border-color:#3BAA4A}
+main{flex:1;display:flex;flex-direction:column;padding:0 16px 16px;max-width:1100px;width:100%;margin:0 auto}
+h1{font-weight:900;font-size:1.6rem;margin:8px 0}
+.muted{color:var(--muted)}
+.btn{border:2px solid var(--ink);background:var(--panel);border-radius:14px;padding:10px 16px;font-weight:800;min-height:48px;display:inline-flex;align-items:center;justify-content:center}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.quiet{border-color:var(--line)}
+.btn.danger{border-color:#B83227;color:#B83227}
+.btn.big{min-width:96px;font-size:1.1rem}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spread{justify-content:space-between}
+.center{justify-content:center}
+.card{background:var(--panel);border-radius:var(--r);padding:14px;display:flex;gap:10px;align-items:center;margin-bottom:12px}
+.card .info{flex:1;min-width:0}
+.card h2{margin:0 0 6px;font-size:1.15rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dots{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px}
+.dot{width:14px;height:14px;border-radius:50%;display:block}
+.stars{color:var(--gold);letter-spacing:2px;margin-left:6px}
+.off{color:var(--line)}
+.empty{background:var(--panel);border-radius:var(--r);padding:24px;color:var(--muted);line-height:1.5}
+.field{display:block;margin:14px 0 6px;color:var(--muted);font-size:.9rem}
+input[type=text]{width:100%;font:inherit;font-size:1.1rem;padding:12px;border:2px solid var(--line);border-radius:12px;background:var(--panel)}
+.ico{font-size:2.6rem;line-height:1;flex:none}
+.ico-big{font-size:min(18vw,96px);line-height:1.15}
+.icons{display:flex;flex-wrap:wrap;gap:6px}
+.icons button{width:48px;height:48px;font-size:1.6rem;border:3px solid transparent;border-radius:12px;background:var(--panel)}
+.icons button.on{border-color:var(--ink)}
+.file{position:relative;overflow:hidden}
+.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.strip{display:flex;gap:8px;overflow-x:auto;padding:6px 2px;min-height:86px}
+.chip{flex:none;border:3px solid transparent;background:var(--panel);border-radius:14px;padding:6px;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:56px}
+.chip.sel{border-color:var(--ink)}
+.chip.br{margin-right:22px;position:relative}
+.chip.br::after{content:'';position:absolute;right:-13px;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--accent)}
+.chip.hear{border-color:var(--accent);transform:translateY(-4px)}
+.btn:disabled{opacity:.4}
+.chip .c{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-weight:900;font-size:.8rem}
+.bubble.long{font-size:min(13vw,72px)}
+.chip small{font-size:.8rem;color:var(--muted)}
+.controls{background:var(--panel);border-radius:14px;padding:10px;margin-top:6px}
+.seg{display:inline-flex;border:2px solid var(--line);border-radius:12px;overflow:hidden}
+.seg button{border:0;background:var(--panel);min-width:48px;min-height:46px;font-weight:800;padding:0 10px}
+.seg button.on{background:var(--ink);color:#fff}
+.seg b{display:grid;place-items:center;padding:0 10px;min-width:48px;background:var(--bg)}
+.oct{margin-top:12px}
+.kwrap{overflow-x:auto;margin-top:10px}
+.kbd{position:relative;height:var(--kh,170px);user-select:none;-webkit-user-select:none;touch-action:manipulation}
+.whites{display:flex;height:100%}
+.key{border:0;padding:0}
+.white{flex:1;min-width:30px;background:#fff;border:1px solid #9AA6A1;border-radius:0 0 10px 10px;display:flex;justify-content:center;align-items:flex-end;padding-bottom:8px;position:relative;font-weight:800;color:var(--muted)}
+.white{box-shadow:inset 0 -7px 0 var(--kc,transparent)}
+.black{box-shadow:inset 0 -7px 0 var(--kc,transparent);position:absolute;top:0;height:60%;background:var(--ink);border-radius:0 0 8px 8px;z-index:2;color:#fff;font-size:.7rem;display:flex;align-items:flex-end;justify-content:center;padding-bottom:6px}
+.key.target{background:var(--c);color:var(--ci);animation:pulse 1.1s ease-in-out infinite}
+.key.down{filter:brightness(.8)}
+.mc{position:absolute;top:8px;width:8px;height:8px;border-radius:50%;background:#9AA6A1}
+@keyframes pulse{50%{box-shadow:inset 0 -16px 0 rgba(0,0,0,.2)}}
+/* practice */
+.play{flex:1;display:flex;flex-direction:column}
+.progress{flex:1;height:14px;background:var(--line);border-radius:99px;overflow:hidden;min-width:80px}
+.progress i{display:block;height:100%;background:var(--accent);transition:width .25s}
+.stage{flex:1;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:20px 32px;padding:12px 0}
+.sheet-btn{border:0;background:none;padding:0}
+.sheet{display:block;width:min(36vw,260px);max-height:34vh;object-fit:contain;border-radius:14px;border:3px solid #fff}
+.bubble-wrap{position:relative;display:flex;flex-direction:column;align-items:center;gap:10px}
+.bubble{width:min(40vw,210px);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;font-size:min(20vw,104px);font-weight:900;animation:pop .25s ease-out}
+@keyframes pop{from{transform:scale(.8)}to{transform:scale(1)}}
+.then{color:var(--muted);display:flex;align-items:center;gap:8px}
+.mini{width:30px;height:30px;border-radius:50%;display:inline-grid;place-items:center;font-weight:900;font-size:.9rem}
+.hand{display:flex;flex-direction:column;align-items:center}
+.hand svg{width:min(26vw,140px);height:auto}
+.finger{font-size:2.8rem;font-weight:900;line-height:1}
+.play .kbd{--kh:min(30vh,200px)}
+.spark{position:absolute;left:50%;top:42%;color:var(--gold);font-size:28px;pointer-events:none;animation:fly .7s ease-out forwards}
+@keyframes fly{from{transform:translate(-50%,-50%) scale(.6);opacity:1}to{transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(1.2);opacity:0}}
+.wall{display:flex;flex-direction:column-reverse;gap:9px;max-width:100%}
+.wrow{display:flex;flex-wrap:wrap;gap:9px 4px}
+.brick{display:block;width:38px;height:20px;background:var(--b);border-radius:3px;position:relative;box-shadow:inset 0 -4px 0 rgba(0,0,0,.18)}
+.brick::before,.brick::after{content:'';position:absolute;top:-6px;width:12px;height:6px;background:var(--b);border-radius:3px 3px 0 0}
+.brick::before{left:5px}.brick::after{right:5px}
+.brick.ghost{background:transparent;box-shadow:none;outline:2px dashed var(--line);outline-offset:-2px}
+.brick.ghost::before,.brick.ghost::after{background:transparent}
+.brick.new{animation:drop .35s ease-out}
+@keyframes drop{from{transform:translateY(-40px);opacity:0}to{transform:none;opacity:1}}
+.stepdone{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center}
+.done{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px}
+.bigstars{font-size:min(22vw,120px);color:var(--gold);line-height:1}
+.swatch{display:flex;flex-direction:column;align-items:center;gap:4px;font-weight:800}
+.swatch input{width:52px;height:52px;border:0;padding:0;background:none}
+#overlay{position:fixed;inset:0;background:rgba(20,28,33,.92);display:grid;place-items:center;z-index:10;padding:12px}
+#overlay img{max-width:100%;max-height:100%;border-radius:10px}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 18px;border-radius:12px;z-index:20}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
