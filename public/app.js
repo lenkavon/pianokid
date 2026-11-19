@@ -8,9 +8,10 @@ const DEFAULT_COLORS = {C:'#E5333F',D:'#F5911E',E:'#F7CF1E',F:'#3BAA4A',G:'#20AF
 const DEFAULT_FINGER = {1:'#E5333F',2:'#F5911E',3:'#F7CF1E',4:'#3BAA4A',5:'#2F7FD0'};
 // style 'notes' = colour by note; 'fingers' = sheet is coloured finger numbers → colour by finger, big circle shows the finger
 const DEFAULT_BLACK = {'C#':'#8E1B24','D#':'#A85A0C','F#':'#1F6B2A','G#':'#0D6577','A#':'#4B2A85'};
-let settings = {naming:'H', style:'notes', appSound:false, colors:{...DEFAULT_COLORS}, blackColors:{...DEFAULT_BLACK}, fingerColors:{...DEFAULT_FINGER}}; // Czech naming: B natural is called H
+let settings = {v:2, naming:'H', style:'fingers', appSound:false, colors:{...DEFAULT_COLORS}, blackColors:{...DEFAULT_BLACK}, fingerColors:{...DEFAULT_FINGER}}; // Czech naming: B natural is called H
 // black keys: darker shade of the white key below by default; set them to match the stickers / sheet
-const mergeSettings = s => ({...settings, ...s, colors:{...DEFAULT_COLORS, ...(s.colors||{})}, blackColors:{...DEFAULT_BLACK, ...(s.blackColors||{})}, fingerColors:{...DEFAULT_FINGER, ...(s.fingerColors||{})}});
+// v2: colour by finger is the default; settings saved before v2 are switched over once
+const mergeSettings = s => ({...settings, ...s, ...((s.v || 1) < 2 ? {v:2, style:'fingers'} : {}), colors:{...DEFAULT_COLORS, ...(s.colors||{})}, blackColors:{...DEFAULT_BLACK, ...(s.blackColors||{})}, fingerColors:{...DEFAULT_FINGER, ...(s.fingerColors||{})}});
 
 const CZ = {'B':'H','C#':'Cis','D#':'Dis','F#':'Fis','G#':'Gis','A#':'Ais'};   // Czech names
 const name = p => { const n = PC[p%12]; return settings.naming === 'H' ? (CZ[n] || n) : n; };
