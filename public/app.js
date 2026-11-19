@@ -289,7 +289,8 @@ function editHTML(){
     <label class="field" for="exname">Name</label>
     <input id="exname" type="text" value="${esc(edit.name)}" placeholder="Lesson 3, Little bee" autocomplete="off">
     <span class="field">Icon</span>
-    <div class="icons">${ICONS.map(e => `<button class="${e === edit.icon ? 'on' : ''}" data-act="icon" data-v="${e}" aria-label="${e}">${e}</button>`).join('')}</div>
+    <div class="icons">${(ICONS.includes(edit.icon) ? ICONS : [edit.icon, ...ICONS]).map(e => `<button class="${e === edit.icon ? 'on' : ''}" data-act="icon" data-v="${e}" aria-label="${e}">${e}</button>`).join('')}
+      <button class="more" data-act="emoji-picker">All emoji…</button></div>
     <span class="field">Notes: play them on the keyboard in order, or tap the keys below. New notes go after the selected one.</span>
     <div class="strip">${edit.notes.map((n,i) => `<button class="chip${i === edit.sel ? ' sel' : ''}${n.br && i < edit.notes.length-1 ? ' br' : ''}" data-act="sel" data-i="${i}"><span class="c" style="background:${nColor(n)};color:${ink(nColor(n))}">${name(n.p)}</span><small>${n.h}${n.f}</small></button>`).join('')
       || '<span class="muted" style="align-self:center">No notes yet</span>'}</div>`;
@@ -434,6 +435,7 @@ document.addEventListener('click', async e => {
     case 'next-step': play.stepDone = false; render(); break;
     case 'oct': edit.oct = clamp(edit.oct + (+v), 1, 6); render(); break;
     case 'icon': edit.icon = v; render(); break;
+    case 'emoji-picker': openEmojiPicker(); break;
     case 'again': startPlay(play.ex.id); break;
     case 'settings': view = 'settings'; render(); break;
     case 'naming': settings.naming = v; await store.set('settings', settings); render(); break;
@@ -451,7 +453,19 @@ document.addEventListener('click', async e => {
     case 'sign-out': await cloud.signOut(); location.reload(); break;
   }
 });
-document.getElementById('overlay').addEventListener('click', e => { e.currentTarget.hidden = true; });
+document.getElementById('overlay').addEventListener('click', e => { if (e.target === e.currentTarget) e.currentTarget.hidden = true; }); // tap outside to close
+
+// Full emoji picker with search (web component, loaded only when opened)
+async function openEmojiPicker(){
+  const o = document.getElementById('overlay');
+  try{ await import('https://cdn.jsdelivr.net/npm/emoji-picker-element@1.29.1/index.js'); }
+  catch(e){ console.error(e); toast('Could not load the emoji list. Check the connection.'); return; }
+  o.innerHTML = '<emoji-picker class="light"></emoji-picker>';
+  o.querySelector('emoji-picker').addEventListener('emoji-click', ev => {
+    edit.icon = ev.detail.unicode; o.hidden = true; o.innerHTML = ''; render();
+  });
+  o.hidden = false;
+}
 document.addEventListener('input', e => { if (e.target.id === 'exname') edit.name = e.target.value; });
 document.addEventListener('change', async e => {
   const t = e.target;
