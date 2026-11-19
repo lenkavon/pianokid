@@ -88,7 +88,7 @@ function resolve(pc, shift, finger, map, prev) {
     const near = map.reduce((b, k) => !b || Math.abs(k.p - p) < Math.abs(b.p - p) ? k : b, null);
     f = near ? near.f : 1; g = true;
   }
-  if (shift) { p += 12 * shift; if (!finger) g = true; }  // octave jump: hand moved, finger is a guess
+  p += 12 * shift;                                      // octave marks keep the finger of the same key in the position
   if (finger) { f = finger; g = false; }
   return { p, f, g };
 }
