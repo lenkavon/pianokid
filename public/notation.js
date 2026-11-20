@@ -153,3 +153,42 @@ export function notesToText(notes, o) {
   // tidy: drop hand switches that are immediately overridden or end a line
   return lines.map(l => `${l.hand}: ${l.join(' ')}`.replace(/(?:[RL]:\s*)+(?=[RL]:)/g, '').replace(/\s*[RL]:\s*$/, '')).join('\n');
 }
+
+// ---------- MIDI import helpers ----------
+
+// octave (1..7) for a hand position that covers the most of these pitches
+export function fitOctave(pos, pitches, naming, fallback) {
+  if (!pitches.length) return fallback;
+  let best = fallback, score = Infinity;
+  for (let oct = 1; oct <= 7; oct++) {
+    const keys = parsePos(pos, oct, naming).keys.filter(p => p != null);
+    if (!keys.length) return fallback;
+    const sc = pitches.reduce((t, p) => t + (keys.includes(p) ? 0 : 100 + Math.min(...keys.map(k => Math.abs(k - p)))), 0);
+    if (sc < score) { score = sc; best = oct; }
+  }
+  return best;
+}
+
+// steps [{keys:[{p,h}], bar}] → exercise text, one line per `barsPerLine` bars (and per hand change at a line start)
+export function stepsToText(steps, o, barsPerLine = 1) {
+  const m = maps(o), prev = {}, lines = [];
+  let line = null, lineHand = null, lineGroup = null;
+  const tok = k => {                                    // octave marks relative to what the parser would pick
+    const pc = k.p % 12, r = resolve(pc, 0, null, m[k.h], prev[k.h]);
+    const shift = Math.round((k.p - r.p) / 12);
+    prev[k.h] = k.p;
+    return noteName(pc, o.naming) + (shift > 0 ? "'".repeat(shift) : ','.repeat(-shift));
+  };
+  for (const st of steps) {
+    const group = Math.floor((st.bar || 0) / barsPerLine);
+    const main = line && group === lineGroup && st.keys.some(k => k.h === lineHand) ? lineHand
+      : st.keys.some(k => k.h === 'R') ? 'R' : st.keys[0].h;        // prefer the right hand (usually the melody)
+    if (!line || group !== lineGroup) { line = []; lines.push(line); line.hand = lineHand = main; lineGroup = group; }
+    else if (main !== lineHand) { line.push(`${main}:`); lineHand = main; }
+    const keys = [...st.keys.filter(k => k.h === main), ...st.keys.filter(k => k.h !== main)];
+    let t = tok(keys[0]);
+    for (const w of keys.slice(1)) t += '+' + (w.h !== lineHand ? `${w.h}: ` : '') + tok(w) + (w.h !== lineHand ? ` ${lineHand}:` : '');
+    line.push(t);
+  }
+  return lines.map(l => `${l.hand}: ${l.join(' ')}`.replace(/(?:[RL]:\s*)+(?=[RL]:)/g, '').replace(/\s*[RL]:\s*$/, '')).join('\n');
+}

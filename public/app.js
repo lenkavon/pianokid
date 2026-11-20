@@ -1,5 +1,6 @@
 import { connectCloud } from './cloud.js';
-import { parseExercise, notesToText, parsePos } from './notation.js';
+import { parseExercise, notesToText, parsePos, fitOctave, stepsToText } from './notation.js';
+import { readMidi, summarize, defaultChoices, midiToSteps } from './midi-import.js';
 
 // ---------- Notes & colours ----------
 const PC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -351,7 +352,8 @@ function textEditorHTML(){
   return `<span class="field">Hand positions: the 5 keys under the fingers, low to high, "-" for a finger with no key</span>
     ${pos('L')}${pos('R')}
     <p class="hint">Right hand fingers 1→5 go up, left hand fingers 5→1 go up. Example on black keys: <code>- Fis Gis Ais -</code></p>
-    <label class="field" for="extext">Notes, one line per row of the sheet</label>
+    <div class="row spread" style="margin-top:14px"><label class="field" for="extext" style="margin:0">Notes, one line per row of the sheet</label>
+      <span class="btn quiet file">Import MIDI file<input id="midi-in" type="file" accept=".mid,.midi,audio/midi,audio/x-midi"></span></div>
     <textarea id="extext" rows="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="R: C D E F G&#10;L: G F E D C">${esc(edit.text)}</textarea>
     <p class="hint"><code>R:</code> or <code>P:</code> right hand, <code>L:</code> left hand (a line without it keeps the hand).
       Spaces optional: <code>CDEFG</code>. Finger comes from the hand position; a digit sets it: <code>E3</code>.
@@ -496,6 +498,10 @@ document.addEventListener('click', async e => {
     case 'br': edit.notes[edit.sel].br = !edit.notes[edit.sel].br; render(); break;
     case 'split-hand': splitByHand(edit.notes); render(); break;
     case 'clear-br': edit.notes.forEach(n => delete n.br); render(); break;
+    case 'trk-hand': edit.midi.choices.find(c => c.i === +b.dataset.i).hand = v; renderMidiDialog(); break;
+    case 'midi-bars': edit.midi.bars = +v; renderMidiDialog(); break;
+    case 'midi-cancel': closeOverlay(); break;
+    case 'midi-import': finishMidiImport(); break;
     case 'mode':
       if (v === 'text'){
         const same = JSON.stringify(parseExercise({...textOpts(), text:edit.text}).notes.map(n => keysOf(n).map(k => [k.p,k.f,k.h])))
@@ -552,7 +558,48 @@ document.addEventListener('click', async e => {
     case 'sign-out': await cloud.signOut(); location.reload(); break;
   }
 });
-document.getElementById('overlay').addEventListener('click', e => { if (e.target === e.currentTarget) e.currentTarget.hidden = true; }); // tap outside to close
+document.getElementById('overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeOverlay(); }); // tap outside to close
+
+function closeOverlay(){ const o = document.getElementById('overlay'); o.hidden = true; o.innerHTML = ''; if (edit) edit.midi = null; }
+
+// ---------- MIDI file import ----------
+async function startMidiImport(file){
+  let midi;
+  try{ midi = await readMidi(file); }catch(e){ console.error(e); toast('Could not read that MIDI file'); return; }
+  const tracks = summarize(midi);
+  if (!tracks.length){ toast('No notes found in that file'); return; }
+  edit.midi = {midi, tracks, choices: defaultChoices(tracks), bars: 1, file: file.name.replace(/\.(mid|midi)$/i, '')};
+  renderMidiDialog();
+}
+function renderMidiDialog(){
+  const m = edit.midi, o = document.getElementById('overlay');
+  const range = t => `${name(t.lo)}${octave(t.lo)}–${name(t.hi)}${octave(t.hi)}`;
+  o.innerHTML = `<div class="dialog" role="dialog" aria-label="Import MIDI file">
+    <h2>Import ${esc(m.file)}</h2>
+    <p class="muted">Keep only what she plays, usually the melody. "Split" sends notes from middle C up to the right hand.</p>
+    ${m.tracks.map(t => { const c = m.choices.find(x => x.i === t.i); return `<div class="trk">
+      <label class="check"><input type="checkbox" data-trk="${t.i}"${c.on ? ' checked' : ''}> ${esc(t.name)}</label>
+      <span class="muted">${t.count} notes, ${range(t)}</span>
+      <div class="seg">${[['L','Left'],['R','Right'],['auto','Split']].map(([k,l]) => `<button class="${c.hand === k ? 'on' : ''}" data-act="trk-hand" data-i="${t.i}" data-v="${k}">${l}</button>`).join('')}</div></div>`; }).join('')}
+    <span class="field">Bars per line</span>
+    <div class="seg">${[1,2,4].map(k => `<button class="${m.bars === k ? 'on' : ''}" data-act="midi-bars" data-v="${k}">${k}</button>`).join('')}</div>
+    ${edit.text.trim() ? '<p class="warn-line">Replaces the notes already typed.</p>' : ''}
+    <div class="row spread" style="margin-top:16px"><button class="btn quiet" data-act="midi-cancel">Cancel</button><button class="btn primary" data-act="midi-import">Import</button></div>
+  </div>`;
+  o.hidden = false;
+}
+function finishMidiImport(){
+  const m = edit.midi, {steps, bpm} = midiToSteps(m.midi, m.choices);
+  if (!steps.length){ toast('Pick at least one track'); return; }
+  const ps = h => steps.flatMap(s => s.keys.filter(k => k.h === h).map(k => k.p));
+  edit.octR = fitOctave(edit.posR, ps('R'), settings.naming, edit.octR);    // move hand positions to where the music is
+  edit.octL = fitOctave(edit.posL, ps('L'), settings.naming, edit.octL);
+  if (bpm) edit.bpm = clamp(Math.round(bpm/10)*10, 30, 200);
+  edit.text = stepsToText(steps, textOpts(), m.bars);
+  if (!edit.name.trim()) edit.name = m.file;
+  closeOverlay(); reparse(); render();
+  toast(`Imported ${edit.notes.length} steps`);
+}
 
 // Full emoji picker with search (web component, loaded only when opened)
 async function openEmojiPicker(){
@@ -578,6 +625,8 @@ document.addEventListener('input', e => {
 document.addEventListener('change', async e => {
   const t = e.target;
   if (t.id === 'import-in' && t.files[0]) importAll(t.files[0]);
+  else if (t.id === 'midi-in' && t.files[0]){ const file = t.files[0]; t.value = ''; startMidiImport(file); }
+  else if (t.dataset.trk != null && edit?.midi){ edit.midi.choices.find(c => c.i === +t.dataset.trk).on = t.checked; }
   else if (t.dataset.color){ settings.colors[t.dataset.color] = t.value; await store.set('settings', settings); }
   else if (t.dataset.bcolor){ settings.blackColors[t.dataset.bcolor] = t.value; await store.set('settings', settings); render(); }
   else if (t.dataset.fcolor){ const [h, f] = t.dataset.fcolor; settings.fingerColors[h][f] = t.value; await store.set('settings', settings); }

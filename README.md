@@ -61,6 +61,11 @@ C+E   E+L:C             pressed together (chord), also across hands
 ```
 
 Notes outside the hand position get the nearest finger and are marked `?`.
+
+**Import MIDI file** (next to the notes box) converts a .mid into this text: pick the tracks to keep
+(usually just the melody) and the hand for each (or split at middle C); notes starting together become
+chords, one line per 1/2/4 bars, hand positions move to the right octave, tempo is taken from the file.
+Parser: [@tonejs/midi](https://github.com/Tonejs/Midi) 2.0.28, vendored in `public/vendor` (MIT).
 "Pause after each line" turns lines into blocks. Parser: `public/notation.js`.
 
 ## Data and access
