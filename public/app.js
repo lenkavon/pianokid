@@ -42,6 +42,15 @@ function ink(hex){ const n=parseInt(hex.slice(1),16); const r=n>>16&255,g=n>>8&2
 // ---------- Storage ----------
 // Firestore when hosted on Firebase and signed in; browser storage otherwise (local dev).
 let backend = null, cloud = null, loadFailed = false, noAccess = false;
+// publicMode: no family login → only the shared exercises, play only, opened by playing the door melody.
+// The shared copy lives at shared/{hash of the door melody}: without the melody nobody can find it (rules forbid listing).
+let publicMode = false;
+let door = [];                                   // notes played on the door screen
+async function doorHash(ps){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('pianokid-door:' + ps.join(',')));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const sharedStore = key => cloud.store(['shared', key, 'data']);
 const store = {
   async get(k){ try{
       if (backend) return await backend.get(k);
@@ -64,13 +73,37 @@ let view = 'home';
 // Editing lock (per device): kid can only play. Unlock by typing "edit" — fine while she can't write; replace later.
 let unlocked = false;
 try{ unlocked = localStorage.getItem('editUnlocked') === '1'; }catch(e){}
-function setUnlocked(v){ unlocked = v; try{ localStorage.setItem('editUnlocked', v ? '1' : '0'); }catch(e){} }
+function setUnlocked(v){ unlocked = v && !publicMode; try{ localStorage.setItem('editUnlocked', v ? '1' : '0'); }catch(e){} }
 let edit = null;             // {id, name, icon, notes, sel, oct, isNew, thumbR, thumbL, bpm}
 let play = null;             // {ex, i, first, clean, misses, log, stars}
 
+// shared copy for people without a family login: exercises marked "free to share" + display settings
+const publicSettings = () => { const {unlockMelody, doorMelody, doorKey, ...rest} = settings; return rest; };
+function publish(){
+  if (!cloud || publicMode || loadFailed || !settings.doorKey) return;
+  const st = sharedStore(settings.doorKey);
+  st.set('exercises', exercises.filter(x => x.public)).catch(e => console.error(e));
+  st.set('settings', publicSettings()).catch(e => console.error(e));
+}
+async function setDoorMelody(ps){                // ps = null removes it; the old shared copy is deleted
+  const old = settings.doorKey;
+  if (ps){ settings.doorMelody = ps; settings.doorKey = await doorHash(ps); }
+  else { delete settings.doorMelody; delete settings.doorKey; }
+  if (old && old !== settings.doorKey && cloud){ const st = sharedStore(old); st.del('exercises'); st.del('settings'); }
+  await saveSettings();                          // also publishes under the new key
+}
+async function saveSettings(){
+  if (publicMode) return;                       // grandma's device: nothing to save
+  await store.set('settings', settings); publish();
+}
 async function saveList(){
+  if (publicMode){                              // no account: keep her stars on this device only
+    try{ localStorage.setItem('publicBest', JSON.stringify(Object.fromEntries(exercises.map(x => [x.id, {best:x.best, bestL:x.bestL, bestR:x.bestR}])))); }catch(e){}
+    return;
+  }
   if (loadFailed){ toast('Lessons did not load, so saving is off. Reload when online.'); return; } // never overwrite cloud data with an empty list
   if (!await store.set('exercises', exercises)) toast('Could not save. Storage may be full.');
+  publish();
 }
 
 // ---------- MIDI ----------
@@ -114,8 +147,22 @@ function blip(p){ try{
   }
 }catch(e){} }
 
+// Secret melody unlocks editing (kid-proof); recorded in Settings, kept in the family settings only
+let heard = [];
+function listenForUnlock(p){
+  const m = settings.unlockMelody; if (!m || !m.length) return;
+  heard.push(p); if (heard.length > m.length) heard.shift();
+  if (heard.length === m.length && heard.every((q, i) => q === m[i])){ heard = []; melodyUnlocked(); }
+}
+function melodyUnlocked(){
+  setUnlocked(true); closeOverlay(); toast('Editing unlocked'); if (view !== 'play') render(); else renderBar();
+}
+let recording = null;                          // notes while recording a new secret melody in Settings
 function handleNote(p, src){
   stopPlayback();
+  if (recording){ recording.push(p); renderRecording(); }
+  else if (view === 'door'){ door.push(p); if (door.length > 16) door.shift(); renderDoorDots(); }
+  else if ((view === 'home' || view === 'done') && !publicMode) listenForUnlock(p);
   if (view === 'edit'){ if (src === 'screen' || settings.appSound) blip(p); if (edit.mode === 'text') typeNote(p); else addNote(p); }
   else if (view === 'play') playNote(p, src);
   else if (src === 'screen') blip(p);
@@ -133,7 +180,7 @@ function newExercise(){
 async function openEdit(id){
   const ex = exercises.find(x => x.id === id);
   const lowest = Math.min(...ex.notes.map(n => n.p));
-  edit = {id, name:ex.name, notes:ex.notes.map(n => ({...n})), icon: ex.icon || '🎵',
+  edit = {id, name:ex.name, notes:ex.notes.map(n => ({...n})), icon: ex.icon || '🎵', public: !!ex.public,
           sel: ex.notes.length-1, oct: clamp(octave(lowest),1,6), isNew:false, thumbR: ex.thumbR || 60, thumbL: ex.thumbL || 55, bpm: ex.bpm || 80,
           ...TEXT_DEFAULTS, ...pick(ex, ['lineBlocks']), mode: ex.text != null ? 'text' : 'keys', text: ex.text || '', warnings:[]};
   if (edit.mode === 'text' && ex.textV !== 2){      // old texts counted octaves from hand positions: rewrite from the saved notes
@@ -173,7 +220,7 @@ async function saveEdit(){
   ex.thumbR = edit.thumbR; ex.thumbL = edit.thumbL; ex.bpm = edit.bpm;
   ex.lineBlocks = edit.lineBlocks; ['posR','octR','posL','octL'].forEach(k => delete ex[k]);
   if (edit.mode === 'text'){ ex.text = edit.text; ex.textV = 2; } else { delete ex.text; delete ex.textV; }     // tapped edits: the text would be stale
-  ex.icon = edit.icon;
+  ex.icon = edit.icon; if (edit.public) ex.public = true; else delete ex.public;
   if (ex.hasPhoto){ delete ex.hasPhoto; await store.del('photo:'+ex.id); }   // drop photos from older versions
   await saveList(); edit = null; view = 'home'; render();
 }
@@ -298,7 +345,7 @@ async function importAll(file){
       delete ex.hasPhoto; exercises.push(ex); added++;
     }
     if (d.settings) settings = mergeSettings(d.settings);
-    await store.set('settings', settings); await saveList();
+    await saveSettings(); await saveList();
     toast(`Restored ${added} exercise${added === 1 ? '' : 's'}`); render();
   }catch(e){ toast('That file is not a Piano steps backup'); }
 }
@@ -335,9 +382,10 @@ const starsHTML = n => `<span class="stars">${[1,2,3].map(k => `<span class="${k
 
 function homeHTML(){
   let h = `<div class="row spread"><h1>Exercises</h1>${unlocked ? '<button class="btn primary" data-act="new">Add exercise</button>' : ''}</div>`;
+  if (publicMode && !exercises.length) return h + `<div class="empty">No shared exercises yet.</div>`;
   if (!exercises.length) h += `<div class="empty">${unlocked ? "No exercises yet. Add one from the teacher's sheet: pick an icon, type the notes with finger numbers."
                                                              : 'No exercises yet. Tap 🔒 at the top to unlock editing and add one.'}</div>`;
-  for (const ex of exercises) h += `<div class="card"><span class="ico" aria-hidden="true">${ex.icon || '🎵'}</span><div class="info"><h2>${esc(ex.name)}</h2>
+  for (const ex of exercises) h += `<div class="card"><span class="ico" aria-hidden="true">${ex.icon || '🎵'}</span><div class="info"><h2>${esc(ex.name)}${ex.public && !publicMode ? ' <span class="tag" title="Free to share">🌍</span>' : ''}</h2>
       <div class="dots">${ex.notes.slice(0,16).map(n => `<i class="dot" style="background:${nColor(n)}"></i>`).join('')}</div>
       <span class="muted">${ex.notes.length} notes${ex.practiceHand && ex.practiceHand !== 'B' && handsOf(ex).size > 1 ? `, practicing ${ex.practiceHand === 'L' ? 'left' : 'right'} hand` : ''}</span>${starsHTML(ex.best||0)}</div>
       ${unlocked ? `<button class="btn quiet" data-act="edit" data-id="${ex.id}">Edit</button>` : ''}
@@ -411,6 +459,8 @@ function editHTML(){
     <span class="field">Icon</span>
     <div class="icons">${(ICONS.includes(edit.icon) ? ICONS : [edit.icon, ...ICONS]).map(e => `<button class="${e === edit.icon ? 'on' : ''}" data-act="icon" data-v="${e}" aria-label="${e}">${e}</button>`).join('')}
       <button class="more" data-act="emoji-picker">All emoji…</button></div>
+    <label class="check"><input type="checkbox" id="ex-public"${edit.public ? ' checked' : ''}> 🌍 Free to share: anyone with the link can play it without a login
+      <span class="muted">(only folk songs, public domain or your own, never bought sheets)</span></label>
     <span class="field">Tempo</span>
     <div class="row"><div class="seg"><button data-act="bpm" data-v="-10" aria-label="Slower">−</button><b>${edit.bpm} bpm</b><button data-act="bpm" data-v="10" aria-label="Faster">+</button></div>
       <button class="btn" data-act="listen-edit">▶ Listen</button></div>
@@ -463,8 +513,20 @@ function doneHTML(){
     <h1>Well done!</h1>${play.hand !== 'B' ? `<p class="muted">${play.hand === 'L' ? 'Left' : 'Right'} hand only</p>` : ''}<p class="muted">${play.clean} of ${play.ex.notes.length} notes right on the first try</p>
     <div class="row center"><button class="btn" data-act="replay">▶ Hear how I played</button><button class="btn primary" data-act="again">Play again</button><button class="btn" data-act="home">All exercises</button></div></section>`;
 }
+function melodySection(target, title, hint){
+  const m = target === 'door' ? settings.doorMelody : settings.unlockMelody, rec = recording && recording.target === target;
+  const ui = rec
+    ? `<p class="muted" id="rec-notes"></p><div class="kwrap" style="--kh:120px">${keyboardHTML(36, 83, new Map(), false)}</div>
+       <div class="row"><button class="btn quiet" data-act="rec-cancel">Cancel</button><button class="btn primary" id="rec-done" data-act="rec-done" disabled>Save melody</button></div>`
+    : `<div class="row"><span class="muted">${m?.length ? `${m.length} notes set` : 'Not set'}</span>
+       <button class="btn" data-act="rec-start" data-v="${target}"${recording ? ' disabled' : ''}>${m?.length ? 'Record new' : 'Record'}</button>
+       ${m?.length ? `<button class="btn quiet" data-act="rec-clear" data-v="${target}">Remove</button>` : ''}</div>`;
+  return `<span class="field">${title}</span>${ui}<p class="hint">${hint}</p>`;
+}
 function settingsHTML(){
   return `<div class="row spread"><button class="btn quiet" data-act="home">Back</button><b>Settings</b><span></span></div>
+    ${melodySection('unlock', 'Secret melody to unlock editing', 'At least 4 notes. Played from the exercise list on a family device, it unlocks editing. Without one, unlocking asks to type "edit".')}
+    ${melodySection('door', 'Door melody for shared exercises 🌍', 'Grandma opens the link and plays this (on her screen or a keyboard) to see the exercises marked 🌍, without a login. Keep it between C3 and C6 so it fits her screen. Changing it locks out devices that used the old one.')}
     <span class="field">Note names</span>
     <div class="seg">${['H','B'].map(v => `<button class="${settings.naming === v ? 'on' : ''}" data-act="naming" data-v="${v}">C D E F G A ${v}</button>`).join('')}</div>
     <span class="field">Sound</span>
@@ -496,7 +558,8 @@ function renderBar(){
 function render(){
   renderBar();
   const app = document.getElementById('app');
-  app.innerHTML = {home:homeHTML, edit:editHTML, play:playHTML, done:doneHTML, settings:settingsHTML}[view]();
+  app.innerHTML = {home:homeHTML, edit:editHTML, play:playHTML, done:doneHTML, settings:settingsHTML, door:doorHTML}[view]();
+  if (view === 'door') app.querySelector('.key[data-p="60"]')?.scrollIntoView({inline:'center', block:'nearest'});
   if (view === 'edit') app.querySelector('.chip.sel')?.scrollIntoView({inline:'nearest', block:'nearest'});
   if (view === 'play') app.querySelector('.key.target')?.scrollIntoView({inline:'center', block:'nearest'});
 }
@@ -541,7 +604,7 @@ document.addEventListener('click', async e => {
       const L = play.log.filter(x => x.ok || !settings.appSound);
       runSeq(L.map((x, i) => ({ps:[x.p], wait: i ? clamp(x.t - L[i-1].t, 0, 1500) : 0})));
     } break;
-    case 'home': stopPlayback(); releaseWake(); view = 'home'; edit = null; play = null; render(); break;
+    case 'home': recording = null; stopPlayback(); releaseWake(); view = 'home'; edit = null; play = null; render(); break;
     case 'save': saveEdit(); break;
     case 'del-ex': showDeleteDialog(); break;
     case 'lock':
@@ -551,6 +614,20 @@ document.addEventListener('click', async e => {
         if (view !== 'play') render(); else renderBar();
       } else showUnlockDialog();
       break;
+    case 'rec-start': recording = []; recording.target = v; render(); renderRecording(); break;
+    case 'rec-done':
+      if (recording.length < 4) break;
+      if (recording.target === 'door'){ await setDoorMelody([...recording]); toast('Door melody saved'); }
+      else { settings.unlockMelody = [...recording]; await saveSettings(); toast('Secret melody saved'); }
+      recording = null; render(); break;
+    case 'rec-cancel': recording = null; render(); break;
+    case 'rec-clear':
+      if (v === 'door') await setDoorMelody(null); else { delete settings.unlockMelody; await saveSettings(); }
+      render(); break;
+    case 'door-clear': door = []; renderDoorDots(); break;
+    case 'door-open': openDoor(); break;
+    case 'door-signin': showSignInDialog(); break;
+    case 'door-forget': try{ localStorage.removeItem('doorKey'); }catch(e){} location.reload(); break;
     case 'unlock-go':
       if (norm(document.getElementById('unlock-word')?.value || '') !== 'edit') break;
       setUnlocked(true); closeOverlay(); if (view !== 'play') render(); else renderBar(); break;
@@ -564,8 +641,8 @@ document.addEventListener('click', async e => {
     case 'del-note': edit.notes.splice(edit.sel, 1); edit.sel = Math.min(edit.sel, edit.notes.length-1); render(); break;
     case 'addf': { const h = b.dataset.h, f = +v; insertNote(fingerPitch(h, f, edit['thumb'+h]), f, h); } break;
     case 'thumb': { const k = 'thumb'+b.dataset.h; edit[k] = clamp(whiteStep(edit[k], +v), 36, 84); render(); } break;
-    case 'style': settings.style = v; await store.set('settings', settings); render(); break;
-    case 'sound': settings.appSound = v === 'true'; await store.set('settings', settings); render(); break;
+    case 'style': settings.style = v; await saveSettings(); render(); break;
+    case 'sound': settings.appSound = v === 'true'; await saveSettings(); render(); break;
     case 'next-step': play.stepDone = false; render(); break;
     case 'oct': edit.oct = clamp(edit.oct + (+v), 1, 6); render(); break;
     case 'icon': edit.icon = v; render(); break;
@@ -573,8 +650,8 @@ document.addEventListener('click', async e => {
     case 'again': startPlay(play.src.id, play.hand); break;
     case 'play-hand': play.src.practiceHand = v; saveList(); startPlay(play.src.id, v); break;
     case 'settings': view = 'settings'; render(); break;
-    case 'naming': settings.naming = v; await store.set('settings', settings); render(); break;
-    case 'reset-colors': settings.colors = {...DEFAULT_COLORS}; settings.blackColors = {...DEFAULT_BLACK}; settings.fingerColors = fingerDefaults(); await store.set('settings', settings); render(); break;
+    case 'naming': settings.naming = v; await saveSettings(); render(); break;
+    case 'reset-colors': settings.colors = {...DEFAULT_COLORS}; settings.blackColors = {...DEFAULT_BLACK}; settings.fingerColors = fingerDefaults(); await saveSettings(); render(); break;
     case 'export': exportAll(); break;
     case 'midi': initMidi(); break;
     case 'sign-in':
@@ -593,6 +670,24 @@ document.getElementById('overlay').addEventListener('click', e => { if (e.target
 function closeOverlay(){ const o = document.getElementById('overlay'); o.hidden = true; o.innerHTML = ''; if (edit) edit.midi = null; }
 
 // ---------- Delete guard: retype the exercise name ----------
+function renderDoorDots(){
+  const el = document.getElementById('door-dots'); if (el) el.textContent = door.length ? '●'.repeat(door.length) : ' ';
+}
+async function openDoor(){
+  if (door.length < 4){ toast('Play the melody first'); return; }
+  const key = await doorHash(door);
+  door = []; renderDoorDots();
+  if (await loadShared(key)){ try{ localStorage.setItem('doorKey', key); }catch(e){} view = 'home'; render(); }
+  else toast('That is not the melody. Try again.');
+}
+function doorHTML(){
+  return `<section class="done"><div class="ico-big" aria-hidden="true">🎹</div><h1>Piano steps</h1>
+    <p class="muted">Play the door melody to open the songs.</p>
+    <p id="door-dots" class="door-dots" aria-live="polite"> </p>
+    <div class="row center"><button class="btn quiet" data-act="door-clear">Start again</button><button class="btn primary big" data-act="door-open">Open</button></div>
+    <div class="kwrap" style="width:100%">${keyboardHTML(48, 84, new Map(), false)}</div>
+    <button class="btn quiet" data-act="door-signin" style="margin-top:18px">Family sign-in</button></section>`;
+}
 const savedName = () => (exercises.find(x => x.id === edit.id)?.name || '').trim();
 const norm = t => t.trim().replace(/\s+/g, ' ').toLocaleLowerCase('cs');
 function deleteNameOk(){ const i = document.getElementById('del-name'); return !!i && norm(i.value) === norm(savedName()); }
@@ -608,14 +703,39 @@ function showDeleteDialog(){
 }
 
 function showUnlockDialog(){
-  const o = document.getElementById('overlay');
+  if (publicMode){ showSignInDialog(); return; }
+  const o = document.getElementById('overlay'), melody = settings.unlockMelody?.length;
+  heard = [];
   o.innerHTML = `<div class="dialog" role="dialog" aria-label="Unlock editing">
     <h2>Unlock editing</h2>
-    <p class="muted">Type <b>edit</b> to add, change or delete exercises and open settings.</p>
-    <input id="unlock-word" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Type edit">
+    ${melody ? `<p class="muted">Play the secret melody on the keyboard.</p>
+      <div class="kwrap">${keyboardHTML(36, 83, new Map(), false)}</div>`
+    : `<p class="muted">Type <b>edit</b> to add, change or delete exercises. Set a secret melody in Settings to use that instead.</p>
+      <input id="unlock-word" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Type edit">`}
     <div class="row spread" style="margin-top:16px"><button class="btn quiet" data-act="midi-cancel">Cancel</button>
-      <button class="btn primary" id="unlock-go" data-act="unlock-go" disabled>Unlock</button></div></div>`;
-  o.hidden = false; o.querySelector('#unlock-word').focus();
+      ${melody ? '' : '<button class="btn primary" id="unlock-go" data-act="unlock-go" disabled>Unlock</button>'}</div></div>`;
+  o.hidden = false;
+  if (melody) o.querySelector('.key[data-p="60"]')?.scrollIntoView({inline:'center', block:'nearest'});
+  else o.querySelector('#unlock-word').focus();
+}
+function showSignInDialog(){
+  const o = document.getElementById('overlay'), who = cloud?.user?.email;
+  o.innerHTML = `<div class="dialog" role="dialog" aria-label="Family sign-in">
+    <h2>Family sign-in</h2>
+    ${who ? `<p class="muted">${esc(who)} is not a family account, so it can only play the shared exercises.</p>
+      <div class="row spread" style="margin-top:16px"><button class="btn quiet" data-act="midi-cancel">Cancel</button><button class="btn" data-act="sign-out">Use another account</button></div>`
+    : `<p class="muted">Editing and the family's own exercises need a family Google account.</p>
+      <p id="signin-err" class="muted" role="alert" style="color:#B83227"></p>
+      <div class="row spread" style="margin-top:16px"><button class="btn quiet" data-act="midi-cancel">Cancel</button><button class="btn primary" data-act="sign-in">Sign in with Google</button></div>`}
+    ${publicMode && view !== 'door' ? '<div class="row" style="margin-top:12px"><button class="btn quiet" data-act="door-forget">Close the songs on this device</button></div>' : ''}
+  </div>`;
+  o.hidden = false;
+}
+// melody recording in Settings
+function renderRecording(){
+  const el = document.getElementById('rec-notes'); if (!el) return;
+  el.textContent = recording.length ? recording.map(p => name(p) + octave(p)).join(' ') : 'Play the notes now…';
+  const done = document.getElementById('rec-done'); if (done) done.disabled = recording.length < 4;
 }
 
 // ---------- MIDI file import ----------
@@ -669,6 +789,7 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'exname') edit.name = t.value;
   else if (t.id === 'extext'){ edit.text = t.value; reparse(); refreshDerived(); }
+  else if (t.id === 'ex-public') edit.public = t.checked;
   else if (t.id === 'lineblocks'){ edit.lineBlocks = t.checked; reparse(); refreshDerived(); }
   else if (t.id === 'del-name') document.getElementById('del-go').disabled = !deleteNameOk();
   else if (t.id === 'unlock-word') document.getElementById('unlock-go').disabled = norm(t.value) !== 'edit';
@@ -685,12 +806,22 @@ document.addEventListener('change', async e => {
   if (t.id === 'import-in' && t.files[0]) importAll(t.files[0]);
   else if (t.id === 'midi-in' && t.files[0]){ const file = t.files[0]; t.value = ''; startMidiImport(file); }
   else if (t.dataset.trk != null && edit?.midi){ edit.midi.choices.find(c => c.i === +t.dataset.trk).on = t.checked; }
-  else if (t.dataset.color){ settings.colors[t.dataset.color] = t.value; await store.set('settings', settings); }
-  else if (t.dataset.bcolor){ settings.blackColors[t.dataset.bcolor] = t.value; await store.set('settings', settings); render(); }
-  else if (t.dataset.fcolor){ const [h, f] = t.dataset.fcolor; settings.fingerColors[h][f] = t.value; await store.set('settings', settings); }
+  else if (t.dataset.color){ settings.colors[t.dataset.color] = t.value; await saveSettings(); }
+  else if (t.dataset.bcolor){ settings.blackColors[t.dataset.bcolor] = t.value; await saveSettings(); render(); }
+  else if (t.dataset.fcolor){ const [h, f] = t.dataset.fcolor; settings.fingerColors[h][f] = t.value; await saveSettings(); }
 });
 
 // ---------- Start ----------
+async function loadShared(key){                // → true if a shared copy exists for this door key
+  let ex, st;
+  try{ ex = await sharedStore(key).get('exercises'); st = await sharedStore(key).get('settings'); }
+  catch(e){ console.error(e); return false; }
+  if (!Array.isArray(ex)) return false;
+  publicMode = true; unlocked = false; loadFailed = false; backend = null;
+  exercises = ex; if (st) settings = mergeSettings(st);
+  try{ const b = JSON.parse(localStorage.getItem('publicBest') || '{}'); exercises.forEach(x => Object.assign(x, b[x.id] || {})); }catch(e){}
+  return true;
+}
 async function load(){
   if (backend){
     try{
@@ -738,10 +869,14 @@ function signInHTML(){
 
 (async () => {
   try{ cloud = await connectCloud(); }catch(e){ console.error(e); cloud = null; }
-  if (cloud && !cloud.user){ renderBar(); document.getElementById('app').innerHTML = signInHTML(); return; }
-  if (cloud){ backend = cloud.store(['spaces', 'family', 'data']); await migrateLocal(); }
-  await load();
-  if (noAccess){ renderBar(); document.getElementById('app').innerHTML = noAccessHTML(); return; }
+  if (cloud){
+    if (cloud.user){ backend = cloud.store(['spaces', 'family', 'data']); await migrateLocal(); await load(); }
+    if (!cloud.user || noAccess){                          // no family login: the door melody opens the shared songs
+      let key = null; try{ key = localStorage.getItem('doorKey'); }catch(e){}
+      publicMode = true; unlocked = false; exercises = [];
+      if (!(key && await loadShared(key))){ try{ localStorage.removeItem('doorKey'); }catch(e){} view = 'door'; }
+    }
+  } else await load();
   render();
   initMidi();
 })();

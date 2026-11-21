@@ -18,6 +18,15 @@ service cloud.firestore {
       allow create, update: if family() && validWrite();
     }
 
+    // Shared songs ("free to share"), stored under a hash of the door melody. Anyone who knows the
+    // melody can read them by exact address; nobody can list keys, so the path stays secret.
+    match /shared/{key}/data/{doc} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if family() && validWrite();
+      allow delete: if family();
+    }
+
     // Older per-user space: kept readable for its owner so lessons can be moved to the family space
     match /users/{uid}/data/{key} {
       allow read: if family() && request.auth.uid == uid;

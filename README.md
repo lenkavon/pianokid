@@ -77,6 +77,15 @@ who signs in sees a "No access" screen. To add a person, add their email there a
 When the family space is empty, the first sign-in copies lessons from that user's older private
 space (`users/{uid}/data`) or, failing that, from the browser.
 
+## Locks and sharing
+
+- **Editing lock** (🔒, per device): editing is hidden until unlocked by the secret melody
+  (Settings) or, if none is set, by typing `edit`.
+- **Shared songs** (🌍 "Free to share" on an exercise): copied to `shared/{sha256(door melody)}/data`.
+  Without a family login the app shows a door screen; playing the door melody opens those songs
+  (play only, stars kept on that device). Rules allow `get` but not `list` there, so the path is
+  only reachable by someone who knows the melody. Changing the melody deletes the old copy.
+
 ## Keyboard
 
 LK-S250: USB **Micro-B** port marked TO HOST. Android: USB-C ↔ Micro-B **data** cable.

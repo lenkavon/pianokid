@@ -132,3 +132,6 @@ textarea{width:100%;font:inherit;font-size:1.2rem;line-height:1.5;padding:12px;b
 .trk{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:10px 0;border-top:2px solid var(--bg)}
 .trk .check{margin:0;flex:1;min-width:140px}
 .warn-line{color:#8A4B00;font-weight:800;margin:12px 0 0}
+.tag{font-size:.9rem;vertical-align:middle}
+.dialog .kwrap{margin-top:8px}
+.door-dots{font-size:1.6rem;letter-spacing:6px;color:var(--accent);min-height:2rem;margin:4px 0}
