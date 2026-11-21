@@ -45,7 +45,8 @@ let backend = null, cloud = null, loadFailed = false, noAccess = false;
 // publicMode: no family login → only the shared exercises, play only, opened by playing the door melody.
 // The shared copy lives at shared/{hash of the door melody}: without the melody nobody can find it (rules forbid listing).
 let publicMode = false;
-let door = [];                                   // notes played on the door screen
+let door = [];
+let sharedStatus = null;                         // last publish of the shared copy: saving / ok / fail                                   // notes played on the door screen
 async function doorHash(ps){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('pianokid-door:' + ps.join(',')));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -82,8 +83,11 @@ const publicSettings = () => { const {unlockMelody, doorMelody, doorKey, ...rest
 function publish(){
   if (!cloud || publicMode || loadFailed || !settings.doorKey) return;
   const st = sharedStore(settings.doorKey);
-  st.set('exercises', exercises.filter(x => x.public)).catch(e => console.error(e));
-  st.set('settings', publicSettings()).catch(e => console.error(e));
+  const fail = e => { console.error(e); sharedStatus = 'fail';
+    toast(e.code === 'permission-denied' ? 'Shared songs not saved: deploy the Firestore rules (firebase deploy --only firestore:rules)' : 'Shared songs not saved. Check the connection.'); if (view === 'settings') render(); };
+  sharedStatus = 'saving';
+  Promise.all([st.set('exercises', exercises.filter(x => x.public)), st.set('settings', publicSettings())])
+    .then(() => { sharedStatus = 'ok'; if (view === 'settings') render(); }, fail);
 }
 async function setDoorMelody(ps){                // ps = null removes it; the old shared copy is deleted
   const old = settings.doorKey;
@@ -521,7 +525,12 @@ function melodySection(target, title, hint){
     : `<div class="row"><span class="muted">${m?.length ? `${m.length} notes set` : 'Not set'}</span>
        <button class="btn" data-act="rec-start" data-v="${target}"${recording ? ' disabled' : ''}>${m?.length ? 'Record new' : 'Record'}</button>
        ${m?.length ? `<button class="btn quiet" data-act="rec-clear" data-v="${target}">Remove</button>` : ''}</div>`;
-  return `<span class="field">${title}</span>${ui}<p class="hint">${hint}</p>`;
+  const status = target !== 'door' || !m?.length || rec ? ''
+    : {saving:'<p class="hint">Saving the shared songs…</p>',
+       ok:`<p class="hint" style="color:#1F6B2A">✓ Shared songs saved (${exercises.filter(x => x.public).length} marked 🌍). The door melody: ${m.map(p => name(p) + octave(p)).join(' ')}</p>`,
+       fail:'<p class="hint" style="color:#B83227">✗ Shared songs were not saved. Run: firebase deploy --only firestore:rules, then tap Re-save.</p>'}[sharedStatus] || '';
+  const resave = target === 'door' && m?.length && !rec ? '<button class="btn quiet" data-act="door-resave">Re-save shared songs</button>' : '';
+  return `<span class="field">${title}</span>${ui}${status}${resave}<p class="hint">${hint}</p>`;
 }
 function settingsHTML(){
   return `<div class="row spread"><button class="btn quiet" data-act="home">Back</button><b>Settings</b><span></span></div>
@@ -624,6 +633,7 @@ document.addEventListener('click', async e => {
     case 'rec-clear':
       if (v === 'door') await setDoorMelody(null); else { delete settings.unlockMelody; await saveSettings(); }
       render(); break;
+    case 'door-resave': publish(); render(); break;
     case 'door-clear': door = []; renderDoorDots(); break;
     case 'door-open': openDoor(); break;
     case 'door-signin': showSignInDialog(); break;
@@ -649,7 +659,12 @@ document.addEventListener('click', async e => {
     case 'emoji-picker': openEmojiPicker(); break;
     case 'again': startPlay(play.src.id, play.hand); break;
     case 'play-hand': play.src.practiceHand = v; saveList(); startPlay(play.src.id, v); break;
-    case 'settings': view = 'settings'; render(); break;
+    case 'settings':
+      view = 'settings'; render();
+      if (cloud && settings.doorKey && !publicMode)                       // check the shared copy is really there
+        sharedStore(settings.doorKey).get('exercises').then(v => { sharedStatus = Array.isArray(v) ? 'ok' : 'fail'; }, e => { console.error(e); sharedStatus = 'fail'; })
+          .then(() => { if (view === 'settings') render(); });
+      break;
     case 'naming': settings.naming = v; await saveSettings(); render(); break;
     case 'reset-colors': settings.colors = {...DEFAULT_COLORS}; settings.blackColors = {...DEFAULT_BLACK}; settings.fingerColors = fingerDefaults(); await saveSettings(); render(); break;
     case 'export': exportAll(); break;
@@ -675,10 +690,13 @@ function renderDoorDots(){
 }
 async function openDoor(){
   if (door.length < 4){ toast('Play the melody first'); return; }
-  const key = await doorHash(door);
-  door = []; renderDoorDots();
-  if (await loadShared(key)){ try{ localStorage.setItem('doorKey', key); }catch(e){} view = 'home'; render(); }
-  else toast('That is not the melody. Try again.');
+  const played = [...door]; door = []; renderDoorDots();
+  // the melody may be the end of what was played (stray notes before it are fine)
+  for (let n = played.length; n >= 4; n--){
+    const key = await doorHash(played.slice(-n));
+    if (await loadShared(key)){ try{ localStorage.setItem('doorKey', key); }catch(e){} view = 'home'; render(); return; }
+  }
+  toast('That is not the melody. Try again.');
 }
 function doorHTML(){
   return `<section class="done"><div class="ico-big" aria-hidden="true">🎹</div><h1>Piano steps</h1>
