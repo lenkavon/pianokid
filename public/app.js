@@ -215,9 +215,24 @@ async function keepAwake(){ try{ wake = await navigator.wakeLock?.request('scree
 function releaseWake(){ try{ wake?.release(); }catch(e){} wake = null; }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && view === 'play') keepAwake(); });
 
-async function startPlay(id){
-  const ex = exercises.find(x => x.id === id);
-  play = {ex, i:0, first:true, clean:0, misses:0, log:[], got:{}};
+// practice one hand: keep only that hand's keys; steps with none are dropped (their block end moves back)
+function filterHand(notes, h){
+  const out = [], clean = k => ({p:k.p, f:k.f, h:k.h});
+  for (const n of notes){
+    const ks = keysOf(n).filter(k => k.h === h).map(clean);
+    if (!ks.length){ if (n.br && out.length) out[out.length-1].br = true; continue; }
+    const [m, ...w] = ks;
+    out.push({...m, ...(w.length ? {with:w} : {}), ...(n.br ? {br:true} : {})});
+  }
+  return out;
+}
+const handsOf = ex => new Set(ex.notes.flatMap(n => keysOf(n).map(k => k.h)));
+async function startPlay(id, hand){
+  const src = exercises.find(x => x.id === id);
+  if (!handsOf(src).has('L') || !handsOf(src).has('R')) hand = 'B';      // one-hand exercise: nothing to choose
+  hand = hand || src.practiceHand || 'B';
+  const ex = hand === 'B' ? src : {...src, notes: filterHand(src.notes, hand)};
+  play = {ex, src, hand, i:0, first:true, clean:0, misses:0, log:[], got:{}};
   view = 'play'; keepAwake(); render();
 }
 function playNote(p, src){
@@ -244,7 +259,8 @@ function playNote(p, src){
 async function finish(){
   const r = play.clean / play.ex.notes.length;
   play.stars = r >= 0.9 ? 3 : r >= 0.7 ? 2 : 1; // finishing always earns at least 1 star
-  if (play.stars > (play.ex.best||0)){ play.ex.best = play.stars; saveList(); }
+  const key = {B:'best', L:'bestL', R:'bestR'}[play.hand];             // stars kept per hand choice
+  if (play.stars > (play.src[key]||0)){ play.src[key] = play.stars; saveList(); }
   releaseWake(); view = 'done'; render();
 }
 function burst(){
@@ -314,7 +330,7 @@ function homeHTML(){
   if (!exercises.length) h += `<div class="empty">No exercises yet. Add one from the teacher's sheet: pick an icon, enter the notes, and set a finger for each.</div>`;
   for (const ex of exercises) h += `<div class="card"><span class="ico" aria-hidden="true">${ex.icon || '🎵'}</span><div class="info"><h2>${esc(ex.name)}</h2>
       <div class="dots">${ex.notes.slice(0,16).map(n => `<i class="dot" style="background:${nColor(n)}"></i>`).join('')}</div>
-      <span class="muted">${ex.notes.length} notes</span>${starsHTML(ex.best||0)}</div>
+      <span class="muted">${ex.notes.length} notes${ex.practiceHand && ex.practiceHand !== 'B' && handsOf(ex).size > 1 ? `, practicing ${ex.practiceHand === 'L' ? 'left' : 'right'} hand` : ''}</span>${starsHTML(ex.best||0)}</div>
       <button class="btn quiet" data-act="edit" data-id="${ex.id}">Edit</button>
       <button class="btn primary big" data-act="play" data-id="${ex.id}">Play</button></div>`;
   return h + `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, colors, backup</button></div>`;
@@ -413,7 +429,9 @@ function wallHTML(ex, done, fresh){
 }
 function playHTML(){
   const ex = play.ex, N = ex.notes.length, blocks = blocksOf(ex), steps = blocks.length;
-  const head = label => `<div class="row"><button class="btn quiet" data-act="home">Stop</button><button class="btn quiet" data-act="listen-play" aria-label="Listen">▶ Listen</button>
+  const both = handsOf(play.src).size > 1;
+  const handSeg = both ? `<div class="seg" aria-label="Hands">${[['L','Left'],['B','Both'],['R','Right']].map(([k,l]) => `<button class="${play.hand === k ? 'on' : ''}" data-act="play-hand" data-v="${k}">${l}</button>`).join('')}</div>` : '';
+  const head = label => `<div class="row"><button class="btn quiet" data-act="home">Stop</button><button class="btn quiet" data-act="listen-play" aria-label="Listen">▶ Listen</button>${handSeg}
       <div class="progress"><i style="width:${play.i/N*100}%"></i></div><b>${label}</b></div>`;
   if (play.stepDone){
     const s = blocks.findIndex(([, b]) => b === play.i) + 1;
@@ -443,7 +461,7 @@ function playHTML(){
 }
 function doneHTML(){
   return `<section class="done"><div class="ico-big" aria-hidden="true">${play.ex.icon || '🎵'}</div>${wallHTML(play.ex, play.ex.notes.length, false)}<div class="bigstars">${[1,2,3].map(k => `<span class="${k <= play.stars ? '' : 'off'}">★</span>`).join('')}</div>
-    <h1>Well done!</h1><p class="muted">${play.clean} of ${play.ex.notes.length} notes right on the first try</p>
+    <h1>Well done!</h1>${play.hand !== 'B' ? `<p class="muted">${play.hand === 'L' ? 'Left' : 'Right'} hand only</p>` : ''}<p class="muted">${play.clean} of ${play.ex.notes.length} notes right on the first try</p>
     <div class="row center"><button class="btn" data-act="replay">▶ Hear how I played</button><button class="btn primary" data-act="again">Play again</button><button class="btn" data-act="home">All exercises</button></div></section>`;
 }
 function settingsHTML(){
@@ -541,7 +559,8 @@ document.addEventListener('click', async e => {
     case 'oct': edit.oct = clamp(edit.oct + (+v), 1, 6); render(); break;
     case 'icon': edit.icon = v; render(); break;
     case 'emoji-picker': openEmojiPicker(); break;
-    case 'again': startPlay(play.ex.id); break;
+    case 'again': startPlay(play.src.id, play.hand); break;
+    case 'play-hand': play.src.practiceHand = v; saveList(); startPlay(play.src.id, v); break;
     case 'settings': view = 'settings'; render(); break;
     case 'naming': settings.naming = v; await store.set('settings', settings); render(); break;
     case 'reset-colors': settings.colors = {...DEFAULT_COLORS}; settings.blackColors = {...DEFAULT_BLACK}; settings.fingerColors = fingerDefaults(); await store.set('settings', settings); render(); break;
