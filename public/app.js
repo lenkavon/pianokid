@@ -61,6 +61,10 @@ const store = {
 let exercises = [];          // {id, name, icon, notes:[{p,f,h,br}], bpm, thumbR, thumbL, best}
 const ICONS = ['🎵','🐝','🐞','🦋','🐸','🐱','🐶','🐻','🦊','🐰','🐢','🐟','🦄','🐉','🌈','⭐','🌙','☀️','🌸','🍎','🍓','🎈','🚂','🚀','🏰','🎄','⛄','🎃','🐣','🦆'];
 let view = 'home';
+// Editing lock (per device): kid can only play. Unlock by typing "edit" — fine while she can't write; replace later.
+let unlocked = false;
+try{ unlocked = localStorage.getItem('editUnlocked') === '1'; }catch(e){}
+function setUnlocked(v){ unlocked = v; try{ localStorage.setItem('editUnlocked', v ? '1' : '0'); }catch(e){} }
 let edit = null;             // {id, name, icon, notes, sel, oct, isNew, thumbR, thumbL, bpm}
 let play = null;             // {ex, i, first, clean, misses, log, stars}
 
@@ -330,14 +334,15 @@ function handSVG(h, fmap){
 const starsHTML = n => `<span class="stars">${[1,2,3].map(k => `<span class="${k <= n ? '' : 'off'}">★</span>`).join('')}</span>`;
 
 function homeHTML(){
-  let h = `<div class="row spread"><h1>Exercises</h1><button class="btn primary" data-act="new">Add exercise</button></div>`;
-  if (!exercises.length) h += `<div class="empty">No exercises yet. Add one from the teacher's sheet: pick an icon, enter the notes, and set a finger for each.</div>`;
+  let h = `<div class="row spread"><h1>Exercises</h1>${unlocked ? '<button class="btn primary" data-act="new">Add exercise</button>' : ''}</div>`;
+  if (!exercises.length) h += `<div class="empty">${unlocked ? "No exercises yet. Add one from the teacher's sheet: pick an icon, type the notes with finger numbers."
+                                                             : 'No exercises yet. Tap 🔒 at the top to unlock editing and add one.'}</div>`;
   for (const ex of exercises) h += `<div class="card"><span class="ico" aria-hidden="true">${ex.icon || '🎵'}</span><div class="info"><h2>${esc(ex.name)}</h2>
       <div class="dots">${ex.notes.slice(0,16).map(n => `<i class="dot" style="background:${nColor(n)}"></i>`).join('')}</div>
       <span class="muted">${ex.notes.length} notes${ex.practiceHand && ex.practiceHand !== 'B' && handsOf(ex).size > 1 ? `, practicing ${ex.practiceHand === 'L' ? 'left' : 'right'} hand` : ''}</span>${starsHTML(ex.best||0)}</div>
-      <button class="btn quiet" data-act="edit" data-id="${ex.id}">Edit</button>
+      ${unlocked ? `<button class="btn quiet" data-act="edit" data-id="${ex.id}">Edit</button>` : ''}
       <button class="btn primary big" data-act="play" data-id="${ex.id}">Play</button></div>`;
-  return h + `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, colors, backup</button></div>`;
+  return h + (unlocked ? `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, colors, backup</button></div>` : '');
 }
 function chipHTML(n, i){
   const cs = keysOf(n).map(k => `<span class="c" style="background:${nColor(k)};color:${ink(nColor(k))}">${settings.style === 'fingers' ? k.f : name(k.p)}</span>`).join('');
@@ -484,6 +489,9 @@ function renderBar(){
   const m = {ok:['ok','Keyboard: '+midiName], none:['','No keyboard found. Plug in USB.'], unsupported:['','Open in Chrome to use the keyboard'],
              denied:['','Keyboard blocked. Tap to retry.'], idle:['','Connect keyboard']}[midiState];
   const el = document.getElementById('midi'); el.className = 'pill ' + m[0]; el.textContent = m[1];
+  const lk = document.getElementById('lock');
+  lk.textContent = unlocked ? '🔓 Editing' : '🔒'; lk.classList.toggle('on', unlocked);
+  lk.setAttribute('aria-label', unlocked ? 'Lock editing' : 'Unlock editing');
 }
 function render(){
   renderBar();
@@ -536,6 +544,16 @@ document.addEventListener('click', async e => {
     case 'home': stopPlayback(); releaseWake(); view = 'home'; edit = null; play = null; render(); break;
     case 'save': saveEdit(); break;
     case 'del-ex': showDeleteDialog(); break;
+    case 'lock':
+      if (unlocked){
+        setUnlocked(false);
+        if (view === 'edit' || view === 'settings'){ view = 'home'; edit = null; }    // unsaved edits are dropped
+        if (view !== 'play') render(); else renderBar();
+      } else showUnlockDialog();
+      break;
+    case 'unlock-go':
+      if (norm(document.getElementById('unlock-word')?.value || '') !== 'edit') break;
+      setUnlocked(true); closeOverlay(); if (view !== 'play') render(); else renderBar(); break;
     case 'del-go':
       if (!deleteNameOk()) break;
       exercises = exercises.filter(x => x.id !== edit.id); store.del('photo:'+edit.id);
@@ -587,6 +605,17 @@ function showDeleteDialog(){
     <div class="row spread" style="margin-top:16px"><button class="btn quiet" data-act="midi-cancel">Cancel</button>
       <button class="btn danger" id="del-go" data-act="del-go" disabled>Delete</button></div></div>`;
   o.hidden = false; o.querySelector('#del-name').focus();
+}
+
+function showUnlockDialog(){
+  const o = document.getElementById('overlay');
+  o.innerHTML = `<div class="dialog" role="dialog" aria-label="Unlock editing">
+    <h2>Unlock editing</h2>
+    <p class="muted">Type <b>edit</b> to add, change or delete exercises and open settings.</p>
+    <input id="unlock-word" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Type edit">
+    <div class="row spread" style="margin-top:16px"><button class="btn quiet" data-act="midi-cancel">Cancel</button>
+      <button class="btn primary" id="unlock-go" data-act="unlock-go" disabled>Unlock</button></div></div>`;
+  o.hidden = false; o.querySelector('#unlock-word').focus();
 }
 
 // ---------- MIDI file import ----------
@@ -642,6 +671,14 @@ document.addEventListener('input', e => {
   else if (t.id === 'extext'){ edit.text = t.value; reparse(); refreshDerived(); }
   else if (t.id === 'lineblocks'){ edit.lineBlocks = t.checked; reparse(); refreshDerived(); }
   else if (t.id === 'del-name') document.getElementById('del-go').disabled = !deleteNameOk();
+  else if (t.id === 'unlock-word') document.getElementById('unlock-go').disabled = norm(t.value) !== 'edit';
+});
+// Enter in a dialog's input presses its enabled main button
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const go = {'unlock-word':'unlock-go', 'del-name':'del-go'}[e.target.id];
+  const b = go && document.getElementById(go);
+  if (b && !b.disabled){ e.preventDefault(); b.click(); }
 });
 document.addEventListener('change', async e => {
   const t = e.target;
