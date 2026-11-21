@@ -49,6 +49,7 @@ function* tokens(str) {
     yield {
       letter: m[4], acc: m[5],
       shift: (marks.match(/['’]/g) || []).length - (marks.match(/,/g) || []).length,
+      marked: marks.length > 0,
       finger: m[7] ? +m[7] : null,
     };
   }
@@ -76,13 +77,15 @@ function fingerMap(hand, keys) {
   return keys.map((p, i) => p == null ? null : { p, f: hand === 'R' ? i + 1 : 5 - i }).filter(Boolean);
 }
 
-function resolve(pc, shift, finger, map, prev) {
+// absolute = the note had octave marks: count them from the hand position, not from the previous note,
+// so repeated C' stays in the same place instead of climbing
+function resolve(pc, shift, finger, map, prev, absolute = false) {
   let hit = map.find(k => k.p % 12 === pc);
   if (finger) { const k = map.find(k => k.f === finger && k.p % 12 === pc); if (k) hit = k; }
   let p, f, g = false;
   if (hit) { p = hit.p; f = hit.f; }
   else {
-    const center = prev ?? (map.length ? map.reduce((s, k) => s + k.p, 0) / map.length : 60);
+    const center = (absolute ? null : prev) ?? (map.length ? map.reduce((s, k) => s + k.p, 0) / map.length : 60);
     p = Math.round(center); while (p % 12 !== pc) p++;
     if (p - center > 6) p -= 12;                        // nearest pitch with that name
     const near = map.reduce((b, k) => !b || Math.abs(k.p - p) < Math.abs(b.p - p) ? k : b, null);
@@ -91,6 +94,14 @@ function resolve(pc, shift, finger, map, prev) {
   p += 12 * shift;                                      // octave marks keep the finger of the same key in the position
   if (finger) { f = finger; g = false; }
   return { p, f, g };
+}
+
+// how to write pitch p so the parser gets it back: no marks if the default pick matches, else marks from the position
+function spell(pc, p, map, prev) {
+  const r0 = resolve(pc, 0, null, map, prev);
+  if (r0.p === p) return { marks: '', back: r0 };
+  const sh = Math.round((p - resolve(pc, 0, null, map, prev, true).p) / 12);
+  return { marks: sh > 0 ? "'".repeat(sh) : sh < 0 ? ','.repeat(-sh) : "',", back: resolve(pc, sh, null, map, prev, true) };
 }
 
 export function maps(o) {
@@ -111,7 +122,7 @@ export function parseExercise(o) {
       if (t.hand) { hand = t.hand; continue; }
       if (t.plus) { join = true; continue; }
       if (!t.letter) continue;
-      const k = resolve(pcOf(t.letter, t.acc, o.naming), t.shift, t.finger, m[hand], prev[hand]);
+      const k = resolve(pcOf(t.letter, t.acc, o.naming), t.shift, t.finger, m[hand], prev[hand], t.marked);
       prev[hand] = k.p;
       const key = { p: k.p, f: k.f, h: hand };
       if (k.g) { key.g = true; guesses++; }
@@ -133,11 +144,9 @@ export function notesToText(notes, o) {
   const useBr = notes.some(n => n.br);                  // blocks set → one line per block, else one line per hand run
   let line = null, lineHand = null;
   const tokenFor = key => {                             // same resolution order as parseExercise
-    const pc = key.p % 12, r = resolve(pc, 0, null, m[key.h], prev[key.h]);
-    const shift = Math.round((key.p - r.p) / 12);
-    const back = resolve(pc, shift, null, m[key.h], prev[key.h]);
+    const pc = key.p % 12, { marks, back } = spell(pc, key.p, m[key.h], prev[key.h]);
     prev[key.h] = key.p;
-    return noteName(pc, o.naming) + (shift > 0 ? "'".repeat(shift) : ','.repeat(-shift)) + (back.f !== key.f ? key.f : '');
+    return noteName(pc, o.naming) + marks + (back.f !== key.f ? key.f : '');
   };
   notes.forEach((s, i) => {
     if (!line) { line = []; lines.push(line); line.hand = lineHand = s.h; }
@@ -174,10 +183,9 @@ export function stepsToText(steps, o, barsPerLine = 1) {
   const m = maps(o), prev = {}, lines = [];
   let line = null, lineHand = null, lineGroup = null;
   const tok = k => {                                    // octave marks relative to what the parser would pick
-    const pc = k.p % 12, r = resolve(pc, 0, null, m[k.h], prev[k.h]);
-    const shift = Math.round((k.p - r.p) / 12);
+    const pc = k.p % 12, { marks } = spell(pc, k.p, m[k.h], prev[k.h]);
     prev[k.h] = k.p;
-    return noteName(pc, o.naming) + (shift > 0 ? "'".repeat(shift) : ','.repeat(-shift));
+    return noteName(pc, o.naming) + marks;
   };
   for (const st of steps) {
     const group = Math.floor((st.bar || 0) / barsPerLine);
