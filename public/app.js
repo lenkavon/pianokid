@@ -1,5 +1,5 @@
 import { connectCloud } from './cloud.js';
-import { parseExercise, notesToText, parsePos, fitOctave, stepsToText } from './notation.js';
+import { parseExercise, notesToText, stepsToText, spell } from './notation.js';
 import { readMidi, summarize, defaultChoices, midiToSteps } from './midi-import.js';
 
 // ---------- Notes & colours ----------
@@ -120,7 +120,7 @@ function handleNote(p, src){
 }
 
 // ---------- Editor ----------
-const TEXT_DEFAULTS = {posR:'C D E F G', octR:4, posL:'C D E F G', octL:3, lineBlocks:false};   // C position: RH thumb C4, LH thumb G3
+const TEXT_DEFAULTS = {lineBlocks:false};
 function newExercise(){
   edit = {id:uid(), name:'', notes:[], icon:'🎵', sel:-1, oct:4, isNew:true, thumbR:60, thumbL:55, bpm:80,
           mode:'text', text:'', warnings:[], ...TEXT_DEFAULTS};
@@ -131,7 +131,11 @@ async function openEdit(id){
   const lowest = Math.min(...ex.notes.map(n => n.p));
   edit = {id, name:ex.name, notes:ex.notes.map(n => ({...n})), icon: ex.icon || '🎵',
           sel: ex.notes.length-1, oct: clamp(octave(lowest),1,6), isNew:false, thumbR: ex.thumbR || 60, thumbL: ex.thumbL || 55, bpm: ex.bpm || 80,
-          ...TEXT_DEFAULTS, ...pick(ex, ['posR','octR','posL','octL','lineBlocks']), mode: ex.text != null ? 'text' : 'keys', text: ex.text || '', warnings:[]};
+          ...TEXT_DEFAULTS, ...pick(ex, ['lineBlocks']), mode: ex.text != null ? 'text' : 'keys', text: ex.text || '', warnings:[]};
+  if (edit.mode === 'text' && ex.textV !== 2){      // old texts counted octaves from hand positions: rewrite from the saved notes
+    edit.lineBlocks = edit.lineBlocks || edit.notes.some(n => n.br);
+    edit.text = notesToText(edit.notes, textOpts());
+  }
   if (edit.mode === 'text') reparse();
   view = 'edit'; render();
 }
@@ -146,7 +150,7 @@ function addNote(p){
   insertNote(p, f, h);
 }
 function typeNote(p){                       // Casio key in typing mode → note name at the cursor
-  const ta = document.getElementById('extext'), word = name(p);
+  const ta = document.getElementById('extext'), word = spell(p, settings.naming);
   if (ta && document.activeElement === ta){
     const a = ta.selectionStart, pre = ta.value.slice(0, a), post = ta.value.slice(ta.selectionEnd);
     const ins = (pre && !/\s$/.test(pre) ? ' ' : '') + word + ' ';
@@ -163,8 +167,8 @@ async function saveEdit(){
   ex.name = edit.name.trim() || ('Exercise ' + exercises.length);
   ex.notes = edit.notes.map(n => { const {g, ...k} = n; if (k.with) k.with = k.with.map(({g, ...w}) => w); return k; });   // drop "guessed" flags
   ex.thumbR = edit.thumbR; ex.thumbL = edit.thumbL; ex.bpm = edit.bpm;
-  Object.assign(ex, pick(edit, ['posR','octR','posL','octL','lineBlocks']));
-  if (edit.mode === 'text') ex.text = edit.text; else delete ex.text;     // tapped edits: the text would be stale
+  ex.lineBlocks = edit.lineBlocks; ['posR','octR','posL','octL'].forEach(k => delete ex[k]);
+  if (edit.mode === 'text'){ ex.text = edit.text; ex.textV = 2; } else { delete ex.text; delete ex.textV; }     // tapped edits: the text would be stale
   ex.icon = edit.icon;
   if (ex.hasPhoto){ delete ex.hasPhoto; await store.del('photo:'+ex.id); }   // drop photos from older versions
   await saveList(); edit = null; view = 'home'; render();
@@ -350,11 +354,7 @@ function derivedHTML(){
   return stripHTML() + (w.length ? `<ul class="warn">${w.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
     + `<p class="muted">${edit.notes.length} steps${blocksOf(edit).length > 1 ? `, blocks ${blocksOf(edit).map(([a,b]) => b-a).join(' + ')}` : ''}</p>`;
 }
-function posRange(h){
-  const keys = parsePos(edit['pos'+h], edit['oct'+h], settings.naming).keys.filter(p => p != null);
-  return keys.length ? `${name(keys[0])}${octave(keys[0])}–${name(keys[keys.length-1])}${octave(keys[keys.length-1])}` : '—';
-}
-const textOpts = () => ({posR:edit.posR, octR:edit.octR, posL:edit.posL, octL:edit.octL, lineBlocks:edit.lineBlocks, naming:settings.naming});
+const textOpts = () => ({lineBlocks:edit.lineBlocks, naming:settings.naming});
 function reparse(){
   const r = parseExercise({...textOpts(), text:edit.text});
   edit.notes = r.notes; edit.warnings = r.warnings; edit.sel = edit.notes.length-1;
@@ -362,18 +362,12 @@ function reparse(){
 function refreshDerived(){ const d = document.getElementById('derived'); if (d) d.innerHTML = derivedHTML(); }
 
 function textEditorHTML(){
-  const pos = h => `<div class="posrow"><b>${h === 'R' ? 'Right' : 'Left'}</b>
-      <input id="pos${h}" type="text" value="${esc(edit['pos'+h])}" autocomplete="off" spellcheck="false" aria-label="${h === 'R' ? 'Right' : 'Left'} hand position">
-      <div class="seg"><button data-act="posoct" data-h="${h}" data-v="-1" aria-label="Octave down">◀</button><b class="range">${posRange(h)}</b><button data-act="posoct" data-h="${h}" data-v="1" aria-label="Octave up">▶</button></div></div>`;
-  return `<span class="field">Hand positions: the 5 keys under the fingers, low to high, "-" for a finger with no key</span>
-    ${pos('L')}${pos('R')}
-    <p class="hint">Right hand fingers 1→5 go up, left hand fingers 5→1 go up. Example on black keys: <code>- Fis Gis Ais -</code></p>
-    <div class="row spread" style="margin-top:14px"><label class="field" for="extext" style="margin:0">Notes, one line per row of the sheet</label>
+  return `<div class="row spread" style="margin-top:14px"><label class="field" for="extext" style="margin:0">Notes, one line per row of the sheet</label>
       <span class="btn quiet file">Import MIDI file<input id="midi-in" type="file" accept=".mid,.midi,audio/midi,audio/x-midi"></span></div>
-    <textarea id="extext" rows="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="R: C D E F G&#10;L: G F E D C">${esc(edit.text)}</textarea>
-    <p class="hint"><code>R:</code> or <code>P:</code> right hand, <code>L:</code> left hand (a line without it keeps the hand).
-      Spaces optional: <code>CDEFG</code>. Finger comes from the hand position; a digit sets it: <code>E3</code>.
-      <code>C'</code> / <code>C,</code> octave up / down. <code>C+E</code> pressed together, also across hands: <code>E+L:C</code>.
+    <textarea id="extext" rows="7" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="R: C1 D2 E3 F4 G5&#10;L: C,5 D,4 E,3 F,2 G,1">${esc(edit.text)}</textarea>
+    <p class="hint"><code>C</code> is middle C (C4), up to <code>H</code>. <code>C'</code> one octave up, <code>C,</code> one octave down, <code>C,,</code> two down.
+      Finger after the note: <code>E3</code>. <code>R:</code> or <code>P:</code> right hand, <code>L:</code> left (a line without it keeps the hand).
+      <code>C1+E3</code> pressed together, also across hands: <code>E3+L: C,5</code>. <code>|</code> and spaces are ignored.
       Playing the Casio adds notes here too.</p>
     <label class="check"><input type="checkbox" id="lineblocks"${edit.lineBlocks ? ' checked' : ''}> Pause after each line</label>
     <div id="derived">${derivedHTML()}</div>`;
@@ -528,7 +522,6 @@ document.addEventListener('click', async e => {
         reparse();
       }
       edit.mode = v; render(); break;
-    case 'posoct': { const k = 'oct'+b.dataset.h; edit[k] = clamp(edit[k] + (+v), 1, 6); reparse(); render(); } break;
     case 'bpm': edit.bpm = clamp(edit.bpm + (+v), 30, 200); render(); break;
     case 'listen-edit': if (edit.notes.length) listen(edit.notes, edit.bpm, hearChip); break;
     case 'listen-play': {
@@ -610,9 +603,6 @@ function renderMidiDialog(){
 function finishMidiImport(){
   const m = edit.midi, {steps, bpm} = midiToSteps(m.midi, m.choices);
   if (!steps.length){ toast('Pick at least one track'); return; }
-  const ps = h => steps.flatMap(s => s.keys.filter(k => k.h === h).map(k => k.p));
-  edit.octR = fitOctave(edit.posR, ps('R'), settings.naming, edit.octR);    // move hand positions to where the music is
-  edit.octL = fitOctave(edit.posL, ps('L'), settings.naming, edit.octL);
   if (bpm) edit.bpm = clamp(Math.round(bpm/10)*10, 30, 200);
   edit.text = stepsToText(steps, textOpts(), m.bars);
   if (!edit.name.trim()) edit.name = m.file;
@@ -635,10 +625,6 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'exname') edit.name = t.value;
   else if (t.id === 'extext'){ edit.text = t.value; reparse(); refreshDerived(); }
-  else if (t.id === 'posR' || t.id === 'posL'){
-    edit[t.id] = t.value; reparse(); refreshDerived();
-    t.closest('.posrow').querySelector('.range').textContent = posRange(t.id.slice(3));
-  }
   else if (t.id === 'lineblocks'){ edit.lineBlocks = t.checked; reparse(); refreshDerived(); }
 });
 document.addEventListener('change', async e => {

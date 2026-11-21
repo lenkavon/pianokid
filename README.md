@@ -46,25 +46,23 @@ It deploys hosting only; after changing `firestore.rules`, run `firebase deploy 
 
 ## Entering notes
 
-Typing mode (default). Set where each hand rests (5 keys, low to high, `-` for a finger with no key),
-then type one line per row of the sheet; fingers follow from the hand position.
+Typing mode (default). One line per row of the sheet, fixed octaves, finger after each note:
 
 ```
-Left:  C D E F G        Right: C D E F G       (black keys: - Fis Gis Ais -)
-
-R: C D E F G            right hand (P: works too)
-L: G F E D C            left hand; no prefix keeps the previous hand
-CDEFG                   spaces optional
-E3                      digit = explicit finger
-C'  C,                  octave up / down from the hand position
-C+E   E+L:C             pressed together (chord), also across hands
+C D E F G A H           octave 4: C = middle C (C4)
+C'  C''   C,  C,,       one / two octaves up, one / two down (C5, C6, C3, C2)
+E3                      finger 3 (missing → guessed from the previous note, marked ?)
+R: / P:   L:            right / left hand; no prefix keeps the previous hand
+C1+E3   E3+L: C,5       pressed together (chord), also across hands
+|                       ignored, use for bars
 ```
 
-Notes outside the hand position get the nearest finger and are marked `?`.
+"Pause after each line" turns lines into blocks. Notes outside the LK-S250's range (C2–C7) are flagged.
+Texts saved before this format are rewritten from their saved notes when opened. Parser: `public/notation.js`.
 
 **Import MIDI file** (next to the notes box) converts a .mid into this text: pick the tracks to keep
 (usually just the melody) and the hand for each (or split at middle C); notes starting together become
-chords, one line per 1/2/4 bars, hand positions move to the right octave, tempo is taken from the file.
+chords, one line per 1/2/4 bars, tempo is taken from the file; fingers are then guessed (marked ?).
 Parser: [@tonejs/midi](https://github.com/Tonejs/Midi) 2.0.28, vendored in `public/vendor` (MIT).
 "Pause after each line" turns lines into blocks. Parser: `public/notation.js`.
 
