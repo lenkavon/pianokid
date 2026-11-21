@@ -390,7 +390,7 @@ function homeHTML(){
       <span class="muted">${ex.notes.length} notes${ex.practiceHand && ex.practiceHand !== 'B' && handsOf(ex).size > 1 ? `, practicing ${ex.practiceHand === 'L' ? 'left' : 'right'} hand` : ''}</span>${starsHTML(ex.best||0)}</div>
       ${unlocked ? `<button class="btn quiet" data-act="edit" data-id="${ex.id}">Edit</button>` : ''}
       <button class="btn primary big" data-act="play" data-id="${ex.id}">Play</button></div>`;
-  return h + (unlocked ? `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">Sound, colors, backup</button></div>` : '');
+  return h + (unlocked ? `<div class="row" style="margin-top:8px"><button class="btn quiet" data-act="settings">⚙️ Settings: door melody, sound, colors, backup</button></div>` : '');
 }
 function chipHTML(n, i){
   const cs = keysOf(n).map(k => `<span class="c" style="background:${nColor(k)};color:${ink(nColor(k))}">${settings.style === 'fingers' ? k.f : name(k.p)}</span>`).join('');
