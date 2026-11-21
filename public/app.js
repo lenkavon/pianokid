@@ -535,11 +535,11 @@ document.addEventListener('click', async e => {
     } break;
     case 'home': stopPlayback(); releaseWake(); view = 'home'; edit = null; play = null; render(); break;
     case 'save': saveEdit(); break;
-    case 'del-ex':
-      if (confirm('Delete this exercise?')){
-        exercises = exercises.filter(x => x.id !== edit.id); await store.del('photo:'+edit.id);
-        await saveList(); edit = null; view = 'home'; render();
-      } break;
+    case 'del-ex': showDeleteDialog(); break;
+    case 'del-go':
+      if (!deleteNameOk()) break;
+      exercises = exercises.filter(x => x.id !== edit.id); store.del('photo:'+edit.id);
+      closeOverlay(); await saveList(); edit = null; view = 'home'; render(); toast('Exercise deleted'); break;
     case 'sel': if (edit.mode === 'keys'){ edit.sel = +b.dataset.i; render(); } break;
     case 'hand': edit.notes[edit.sel].h = v; render(); break;
     case 'finger': edit.notes[edit.sel].f = +v; render(); break;
@@ -573,6 +573,21 @@ document.addEventListener('click', async e => {
 document.getElementById('overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeOverlay(); }); // tap outside to close
 
 function closeOverlay(){ const o = document.getElementById('overlay'); o.hidden = true; o.innerHTML = ''; if (edit) edit.midi = null; }
+
+// ---------- Delete guard: retype the exercise name ----------
+const savedName = () => (exercises.find(x => x.id === edit.id)?.name || '').trim();
+const norm = t => t.trim().replace(/\s+/g, ' ').toLocaleLowerCase('cs');
+function deleteNameOk(){ const i = document.getElementById('del-name'); return !!i && norm(i.value) === norm(savedName()); }
+function showDeleteDialog(){
+  const o = document.getElementById('overlay');
+  o.innerHTML = `<div class="dialog" role="dialog" aria-label="Delete exercise">
+    <h2>Delete “${esc(savedName())}”?</h2>
+    <p class="muted">This can't be undone, and it's gone for everyone in the family. Type the name to confirm.</p>
+    <input id="del-name" type="text" autocomplete="off" spellcheck="false" placeholder="${esc(savedName())}" aria-label="Exercise name">
+    <div class="row spread" style="margin-top:16px"><button class="btn quiet" data-act="midi-cancel">Cancel</button>
+      <button class="btn danger" id="del-go" data-act="del-go" disabled>Delete</button></div></div>`;
+  o.hidden = false; o.querySelector('#del-name').focus();
+}
 
 // ---------- MIDI file import ----------
 async function startMidiImport(file){
@@ -626,6 +641,7 @@ document.addEventListener('input', e => {
   if (t.id === 'exname') edit.name = t.value;
   else if (t.id === 'extext'){ edit.text = t.value; reparse(); refreshDerived(); }
   else if (t.id === 'lineblocks'){ edit.lineBlocks = t.checked; reparse(); refreshDerived(); }
+  else if (t.id === 'del-name') document.getElementById('del-go').disabled = !deleteNameOk();
 });
 document.addEventListener('change', async e => {
   const t = e.target;
