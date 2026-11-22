@@ -91,10 +91,10 @@ emoji-picker{width:min(100%,420px);height:min(80dvh,480px);--emoji-size:1.8rem}
 @keyframes fly{from{transform:translate(-50%,-50%) scale(.6);opacity:1}to{transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(1.2);opacity:0}}
 .wall{display:flex;flex-direction:column-reverse;gap:9px;max-width:100%}
 .wrow{display:flex;flex-wrap:wrap;gap:9px 4px}
-.brick{display:block;width:38px;height:20px;background:var(--b);border-radius:3px;position:relative;box-shadow:inset 0 -4px 0 rgba(0,0,0,.18)}
+.brick{display:flex;align-items:center;justify-content:center;min-width:38px;height:24px;padding:0 5px 3px;background:var(--b);border-radius:3px;position:relative;box-shadow:inset 0 -4px 0 rgba(0,0,0,.18);font-style:normal;font-size:.72rem;font-weight:900;line-height:1;white-space:nowrap}
 .brick::before,.brick::after{content:'';position:absolute;top:-6px;width:12px;height:6px;background:var(--b);border-radius:3px 3px 0 0}
 .brick::before{left:5px}.brick::after{right:5px}
-.brick.ghost{background:transparent;box-shadow:none;outline:2px dashed var(--line);outline-offset:-2px}
+.brick.ghost{background:transparent;box-shadow:none;outline:2px dashed var(--line);outline-offset:-2px;color:var(--muted);font-weight:800}
 .brick.ghost::before,.brick.ghost::after{background:transparent}
 .brick.new{animation:drop .35s ease-out}
 @keyframes drop{from{transform:translateY(-40px);opacity:0}to{transform:none;opacity:1}}

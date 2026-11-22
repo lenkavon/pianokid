@@ -476,7 +476,11 @@ function editHTML(){
 }
 function wallHTML(ex, done, fresh){
   // one brick per note; a row per step; dashed bricks = the plan still to build
-  const brick = i => i < done ? `<i class="brick${fresh && i === done-1 ? ' new' : ''}" style="--b:${nColor(ex.notes[i])}"></i>` : '<i class="brick ghost"></i>';
+  // each brick carries its note name (chord: C+E); built bricks in the finger colour, the rest dashed
+  const label = n => keysOf(n).map(k => k.p).sort((a, b) => a - b).map(name).join('+');   // chord low → high
+  const brick = i => { const n = ex.notes[i], c = nColor(n);
+    return i < done ? `<i class="brick${fresh && i === done-1 ? ' new' : ''}" style="--b:${c};color:${ink(c)}">${label(n)}</i>`
+                    : `<i class="brick ghost">${label(n)}</i>`; };
   return `<div class="wall" aria-label="${done} of ${ex.notes.length} bricks">${blocksOf(ex).map(([a, b]) =>
     `<div class="wrow">${Array.from({length: b-a}, (_, k) => brick(a+k)).join('')}</div>`).join('')}</div>`;
 }
