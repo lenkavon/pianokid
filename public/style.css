@@ -137,3 +137,5 @@ textarea{width:100%;font:inherit;font-size:1.2rem;line-height:1.5;padding:12px;b
 .door-dots{font-size:1.6rem;letter-spacing:6px;color:var(--accent);min-height:2rem;margin:4px 0}
 .hands{display:flex;gap:18px;align-items:flex-start}
 .hand.rest .muted{opacity:.6}
+.misses{color:var(--muted);font-size:.85rem;max-width:520px;text-align:left}
+.misses summary{cursor:pointer;font-weight:800}

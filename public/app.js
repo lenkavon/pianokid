@@ -113,6 +113,7 @@ async function saveList(){
 // ---------- MIDI ----------
 let midiState = 'idle', midiName = '', midiAccess = null;
 const held = new Set();            // keys currently held down on the Casio
+const lastOn = {};                 // time of the last note-on per key
 async function initMidi(){
   if (!navigator.requestMIDIAccess){ midiState = 'unsupported'; renderBar(); return; }
   try{
@@ -132,8 +133,13 @@ function bindInputs(){
 }
 function onMidi(e){
   const [st, note, vel] = e.data;
-  const cmd = st & 0xF0;
-  if (cmd === 0x90 && vel > 0){ held.add(note); handleNote(note, 'midi'); }          // note-on
+  const cmd = st & 0xF0, ch = st & 0x0F;
+  if (ch === 9) return;                                     // channel 10 = drums from a running rhythm, not her keys
+  if (cmd === 0x90 && vel > 0){
+    const now = performance.now();
+    if (held.has(note) && now - (lastOn[note] || 0) < 120) return;   // same key again within 120 ms, no release = duplicate (e.g. two MIDI ports)
+    lastOn[note] = now; held.add(note); handleNote(note, 'midi');
+  }
   else if (cmd === 0x80 || cmd === 0x90) held.delete(note);                          // note-off (or note-on with velocity 0)
 }
 
@@ -291,7 +297,7 @@ async function startPlay(id, hand){
   if (!handsOf(src).has('L') || !handsOf(src).has('R')) hand = 'B';      // one-hand exercise: nothing to choose
   hand = hand || src.practiceHand || 'B';
   const ex = hand === 'B' ? src : {...src, notes: filterHand(src.notes, hand)};
-  play = {ex, src, hand, i:0, first:true, clean:0, misses:0, log:[], got:{}};
+  play = {ex, src, hand, i:0, first:true, clean:0, misses:0, log:[], got:{}, missLog:[]};
   view = 'play'; keepAwake(); render();
 }
 function playNote(p, src){
@@ -313,6 +319,7 @@ function playNote(p, src){
   } else {
     if (!settings.appSound && src === 'screen') blip(p);
     play.first = false; play.misses++;     // with appSound: silent; never a buzzer or red X
+    play.missLog.push({i: play.i, p});
   }
 }
 async function finish(){
@@ -518,9 +525,18 @@ function playHTML(){
     </div>
     <div class="kwrap">${keyboardHTML(lo, hi, targets, false)}</div></section>`;
 }
+// for the parent: which steps lost the first-try point and which key was pressed instead
+function missesHTML(){
+  const by = new Map();
+  for (const m of play.missLog){ if (!by.has(m.i)) by.set(m.i, []); by.get(m.i).push(m.p); }
+  if (!by.size) return '';
+  const want = i => keysOf(play.ex.notes[i]).map(k => name(k.p) + octave(k.p)).join('+');
+  const items = [...by].slice(0, 12).map(([i, ps]) => `step ${i+1} (${want(i)}): pressed ${ps.map(p => name(p) + octave(p)).join(', ')}`);
+  return `<details class="misses"><summary>Not first try: ${by.size} step${by.size === 1 ? '' : 's'}</summary><p>${items.join('<br>')}${by.size > 12 ? '<br>…' : ''}</p></details>`;
+}
 function doneHTML(){
   return `<section class="done"><div class="ico-big" aria-hidden="true">${play.ex.icon || '🎵'}</div>${wallHTML(play.ex, play.ex.notes.length, false)}<div class="bigstars">${[1,2,3].map(k => `<span class="${k <= play.stars ? '' : 'off'}">★</span>`).join('')}</div>
-    <h1>Well done!</h1>${play.hand !== 'B' ? `<p class="muted">${play.hand === 'L' ? 'Left' : 'Right'} hand only</p>` : ''}<p class="muted">${play.clean} of ${play.ex.notes.length} notes right on the first try</p>
+    <h1>Well done!</h1>${missesHTML()}${play.hand !== 'B' ? `<p class="muted">${play.hand === 'L' ? 'Left' : 'Right'} hand only</p>` : ''}<p class="muted">${play.clean} of ${play.ex.notes.length} notes right on the first try</p>
     <div class="row center"><button class="btn" data-act="replay">▶ Hear how I played</button><button class="btn primary" data-act="again">Play again</button><button class="btn" data-act="home">All exercises</button></div></section>`;
 }
 function melodySection(target, title, hint){
