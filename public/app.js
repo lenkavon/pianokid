@@ -498,10 +498,12 @@ function playHTML(){
   const mini = x => keysOf(x).map(y => `<span class="mini" style="background:${nColor(y)};color:${ink(nColor(y))}">${nLabel(y)}</span>`).join('');
   const then = play.i+1 === N ? 'last one!' : play.i+1 === stepEnd ? 'last in this step' : `then ${mini(next)}`;
   const bubble = y => `<div class="bubble${keys.length > 1 ? ' small' : ''}${String(nLabel(y)).length > 2 ? ' long' : ''}${play.got[y.p] ? ' got' : ''}" style="background:${nColor(y)};color:${ink(nColor(y))}">${nLabel(y)}</div>`;
-  const hands = ['L','R'].filter(h => keys.some(y => y.h === h)).map(h => {
+  // every hand the song uses stays on screen the whole time; a resting hand is drawn all white
+  const used = handsOf(ex);
+  const hands = `<div class="hands">${['L','R'].filter(h => used.has(h)).map(h => {
     const ks = keys.filter(y => y.h === h), fmap = Object.fromEntries(ks.map(y => [y.f, nColor(y)]));
-    return `<div class="hand">${handSVG(h, fmap)}<div class="finger">${ks.map(y => y.f).join(' ')}</div><div class="muted">${h === 'L' ? 'Left hand' : 'Right hand'}</div></div>`;
-  }).join('');
+    return `<div class="hand${ks.length ? '' : ' rest'}">${handSVG(h, fmap)}<div class="finger">${ks.length ? ks.map(y => y.f).join(' ') : '&nbsp;'}</div><div class="muted">${h === 'L' ? 'Left hand' : 'Right hand'}</div></div>`;
+  }).join('')}</div>`;
   const targets = new Map(keys.map(y => [y.p, nColor(y)]));
   return `<section class="play">${head(steps > 1 ? `Step ${stepNo} of ${steps}` : `${play.i+1}/${N}`)}
     <div class="stage">
