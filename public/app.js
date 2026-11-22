@@ -589,10 +589,16 @@ function renderBar(){
 function render(){
   renderBar();
   const app = document.getElementById('app');
+  const keep = view === 'play' ? app.querySelector('.play .kwrap')?.scrollLeft : null;   // keep the keyboard where it was
   app.innerHTML = {home:homeHTML, edit:editHTML, play:playHTML, done:doneHTML, settings:settingsHTML, door:doorHTML}[view]();
   if (view === 'door') app.querySelector('.key[data-p="60"]')?.scrollIntoView({inline:'center', block:'nearest'});
   if (view === 'edit') app.querySelector('.chip.sel')?.scrollIntoView({inline:'nearest', block:'nearest'});
-  if (view === 'play') app.querySelector('.key.target')?.scrollIntoView({inline:'center', block:'nearest'});
+  if (view === 'play'){                         // scroll the keyboard only when the target key is out of view, so keys don't slide every step
+    const k = app.querySelector('.key.target'), w = app.querySelector('.play .kwrap');
+    if (w && keep != null) w.scrollLeft = keep;
+    if (k && w){ const kr = k.getBoundingClientRect(), wr = w.getBoundingClientRect();
+      if (kr.left < wr.left || kr.right > wr.right) w.scrollLeft += (kr.left + kr.width/2) - (wr.left + wr.width/2); }
+  }
 }
 let toastT;
 function toast(msg){ const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 2600); }
